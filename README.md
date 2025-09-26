@@ -1,5 +1,3 @@
-# fall_detection_agentic_aws_hackathon
-
 # LifeWatch
 Your loved one’s digital guardian.
 
@@ -13,9 +11,9 @@ LifeWatch is an AI-powered caregiver assistant that uses video, voice, and real-
 - **Caregiver Dashboard** – Built with Streamlit for easy monitoring and feedback.
 
 # Tech Stack
-- Languages & Frameworks: Python, Streamlit, OpenCV/ffmpeg
-- AWS Services: Rekognition, Transcribe, Polly, Bedrock, Kinesis (optional), S3, Lambda, SNS, DynamoDB, CloudWatch
-- Integrations: Twilio (calls & WhatsApp notifications)
+- **Languages & Frameworks:** Python, Streamlit, OpenCV/ffmpeg
+- **AWS Services:** Rekognition, Transcribe, Polly, Bedrock, Kinesis (optional), S3, Lambda, SNS, DynamoDB, CloudWatch
+- **Integrations:** Twilio (calls & WhatsApp notifications)
 
 # How It Works
 1. Video or audio is uploaded or streamed into AWS.
