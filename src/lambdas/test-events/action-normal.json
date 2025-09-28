@@ -1,0 +1,10 @@
+{
+  "bedrock_response": {
+    "content": "Normal activity confirmed. The person is walking around normally and appears to be in good health. No immediate concerns detected.",
+    "confidence": 0.85,
+    "timestamp": "2024-01-01T12:00:00Z",
+    "source": "bedrock_agent",
+    "priority": "low",
+    "analysis_type": "normal_activity"
+  }
+}

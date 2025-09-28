@@ -1,0 +1,11 @@
+{
+  "video_uri": "s3://fall-detection-video-bucket/samples/normal-activity.mp4",
+  "metadata": {
+    "timestamp": "2024-01-01T12:00:00Z",
+    "source": "living_room_camera",
+    "duration": 60,
+    "format": "mp4",
+    "resolution": "1920x1080",
+    "fps": 30
+  }
+}

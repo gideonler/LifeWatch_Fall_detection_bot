@@ -1,0 +1,12 @@
+{
+  "audio_uri": "s3://fall-detection-audio-bucket/samples/emergency-call.wav",
+  "metadata": {
+    "timestamp": "2024-01-01T12:00:00Z",
+    "source": "bedroom_camera",
+    "duration": 45,
+    "format": "wav",
+    "sample_rate": 44100,
+    "priority": "critical",
+    "expected_outcome": "emergency_alert"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "video_uri": "s3://fall-detection-video-bucket/samples/emergency-situation.mp4",
+  "metadata": {
+    "timestamp": "2024-01-01T12:00:00Z",
+    "source": "bedroom_camera",
+    "duration": 45,
+    "format": "mp4",
+    "resolution": "1920x1080",
+    "fps": 30,
+    "priority": "critical",
+    "expected_outcome": "emergency_alert"
+  }
+}
