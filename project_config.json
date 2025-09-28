@@ -1,0 +1,23 @@
+{
+  "logging": {
+    "lambda_log_level": "INFO",
+    "streamlit_log_level": "INFO"
+  },
+  "paths": {
+    "lambdas_source_folder": "src/lambdas",
+    "agent_schema_destination_prefix": "agent_api_schema",
+    "assets_folder_name": "assets"
+  },
+  "names": {
+    "stack_name": "elderly-home-monitoring-stack",
+    "bedrock_agent_name": "ElderlyHomeMonitoringBedrockAgent",
+    "bedrock_agent_alias": "Home_Monitoring_Agent"
+  },
+  "bedrock_instructions": {
+    "agent_instruction": "You are monitoring images from a live video stream of an elderly's living room. Your job is to analyze images from the stream and then log and alert as necessary. If an incident is observed, you should provide a prompt to ask the elderly about the event and if they need extra help. Use the input from the elderly to make the decision about the alert level. All events should be logged, and anything with alert level of 1 or higher should be alerted. You can recall any past events caught on video in high detail and include them in your alert message. But only provide information from past events. You respond with concise, well-formatted professional written report regarding events.",
+    "action_group_description": "This is an action group for analyzing images, logging, alerting and to search over specific date ranges."
+  },
+  "models": {
+    "bedrock_agent_foundation_model": "mistral.mistral-large-2402-v1:0"
+  }
+}
