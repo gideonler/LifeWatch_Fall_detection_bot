@@ -37,7 +37,7 @@ class AwsStack(Stack):
         # agentSecrets = BedrockSecretsConstruct(self, "BedrockSecrets")
       
         # Create Kinesis construct
-        # kinesis = KinesisConstruct(self, "Kinesis")
+        kinesis = KinesisConstruct(self, "Kinesis")
 
         # Create Polly construct
         polly = PollyAccessConstruct(self, "PollyAccess")
