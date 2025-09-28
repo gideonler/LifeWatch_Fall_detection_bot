@@ -10,7 +10,14 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 class VideoInvokeHandler:
-    """Handles video processing and Bedrock agent invocation for elderly safety monitoring."""
+    """Handles visual processing and Bedrock agent invocation for elderly safety monitoring.
+
+    Supports two input modes:
+    1) video_uri: S3 URI to a video (legacy path using Rekognition Video person tracking)
+    2) image_grid_base64 or image_grid_s3_uri: a grid image of 10 frames from Streamlit
+       - We run Rekognition DetectLabels on the grid image to detect a human
+       - If a human is detected, we store the grid in S3 and invoke the Bedrock agent
+    """
     
     def __init__(self):
         self.bedrock_agent_runtime = boto3.client('bedrock-agent-runtime')
@@ -19,8 +26,10 @@ class VideoInvokeHandler:
         
         # Get Bedrock configuration from SSM
         self.agent_id = self._get_ssm_parameter('/fall-detection/bedrock/agent-id')
-        self.knowledge_base_id = self._get_ssm_parameter('/fall-detection/bedrock/kb-id')
         self.model_id = self._get_ssm_parameter('/fall-detection/bedrock/model-id')
+
+        # commenting out knowledge base id for now
+        # self.knowledge_base_id = self._get_ssm_parameter('/fall-detection/bedrock/kb-id')
         
         # S3 bucket for storing video analysis results
         self.video_analysis_bucket = os.environ.get('VIDEO_ANALYSIS_BUCKET')
@@ -36,38 +45,36 @@ class VideoInvokeHandler:
     
     def process_video(self, event: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Process video file and invoke Bedrock agent for analysis.
-        
-        Args:
-            event: Lambda event containing video file information
-            
-        Returns:
-            Dictionary containing video analysis and Bedrock results
+        Route processing based on input: video or frames grid image.
+
+        Event contracts supported:
+        - { "video_uri": "s3://bucket/key.mp4", "metadata": {...} }
+        - { "image_grid_base64": "<base64>", "metadata": {...} }
+        - { "image_grid_s3_uri": "s3://bucket/key.jpg", "metadata": {...} }
         """
         try:
-            # Extract video file information from event
+            if event.get('image_grid_base64') or event.get('image_grid_s3_uri'):
+                return self._process_frames_grid(event)
+            
+            # Legacy path: video uri provided
             video_uri = event.get('video_uri')
             if not video_uri:
-                raise ValueError("video_uri is required in the event")
-            
-            # Analyze video using Amazon Rekognition
+                raise ValueError("video_uri or image_grid_{base64|s3_uri} is required in the event")
+
             video_analysis = self._analyze_video(video_uri)
-            
-            # Invoke Bedrock agent with video analysis
-            bedrock_response = self._invoke_bedrock_agent(video_analysis, video_uri)
-            
-            # Store results
+            bedrock_response = self._invoke_bedrock_agent(video_analysis, context_uri=video_uri)
+
             results = {
-                "video_analysis": video_analysis,
+                "analysis": video_analysis,
                 "bedrock_analysis": bedrock_response,
                 "timestamp": datetime.utcnow().isoformat(),
-                "video_uri": video_uri
+                "context_uri": video_uri,
+                "input_mode": "video"
             }
-            
-            # Store in S3 if bucket is configured
+
             if self.video_analysis_bucket:
                 self._store_results(results)
-            
+
             return results
             
         except Exception as e:
@@ -256,8 +263,8 @@ class VideoInvokeHandler:
             "source": "mock_analysis"
         }
     
-    def _invoke_bedrock_agent(self, video_analysis: Dict[str, Any], video_uri: str) -> Dict[str, Any]:
-        """Invoke Bedrock agent with video analysis for elderly safety analysis."""
+    def _invoke_bedrock_agent(self, video_analysis: Dict[str, Any], context_uri: str) -> Dict[str, Any]:
+        """Invoke Bedrock agent with analysis summary and a context URI (video or image)."""
         try:
             if not self.agent_id:
                 logger.warning("Bedrock agent ID not configured, returning mock response")
@@ -265,15 +272,15 @@ class VideoInvokeHandler:
             
             # Prepare input for Bedrock agent
             input_text = f"""
-            Please analyze the following video analysis for elderly safety monitoring:
+            Please analyze the following visual analysis for elderly safety monitoring:
             
-            Video Analysis:
+            Analysis Summary:
             - Person Count: {video_analysis.get('person_count', 0)}
             - Safety Score: {video_analysis.get('safety_score', 0)}/100
             - Fall Indicators: {video_analysis.get('fall_indicators', [])}
             - Movement Analysis: {json.dumps(video_analysis.get('movement_analysis', []), indent=2)}
             
-            Video URI: {video_uri}
+            Context URI: {context_uri}
             
             Focus on:
             1. Fall detection based on person positioning and movement
@@ -362,6 +369,94 @@ class VideoInvokeHandler:
             
         except Exception as e:
             logger.error(f"Error storing results in S3: {str(e)}")
+
+    # --------- New image-grid pipeline ---------
+    def _process_frames_grid(self, event: Dict[str, Any]) -> Dict[str, Any]:
+        """Process a grid image of frames from Streamlit.
+
+        If a person is detected by Rekognition, persist the grid to S3 and invoke the Bedrock agent.
+        """
+        image_bytes: Optional[bytes] = None
+        grid_s3_uri: Optional[str] = event.get('image_grid_s3_uri')
+
+        if event.get('image_grid_base64'):
+            import base64
+            image_bytes = base64.b64decode(event['image_grid_base64'])
+        elif grid_s3_uri:
+            # We will not download; Rekognition can read from S3 directly
+            pass
+        else:
+            raise ValueError("image_grid_base64 or image_grid_s3_uri must be provided")
+
+        # Detect person using Rekognition DetectLabels
+        person_detected, labels = self._detect_person_in_image(image_bytes=image_bytes, s3_uri=grid_s3_uri)
+
+        analysis = {
+            "person_count": 1 if person_detected else 0,
+            "movement_analysis": [],
+            "fall_indicators": [],
+            "safety_score": 80 if person_detected else 90,
+            "labels": labels,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+        if not person_detected:
+            return {
+                "analysis": analysis,
+                "bedrock_analysis": self._get_mock_bedrock_response(analysis),
+                "context_uri": grid_s3_uri or "inline-bytes",
+                "input_mode": "image_grid",
+                "note": "No person detected; skipping Bedrock invocation"
+            }
+
+        # Ensure image grid is stored to S3 for traceability
+        if not grid_s3_uri:
+            grid_s3_uri = self._upload_bytes_to_s3(image_bytes)
+
+        bedrock_response = self._invoke_bedrock_agent(analysis, context_uri=grid_s3_uri)
+
+        results = {
+            "analysis": analysis,
+            "bedrock_analysis": bedrock_response,
+            "timestamp": datetime.utcnow().isoformat(),
+            "context_uri": grid_s3_uri,
+            "input_mode": "image_grid"
+        }
+
+        if self.video_analysis_bucket:
+            self._store_results(results)
+
+        return results
+
+    def _detect_person_in_image(self, *, image_bytes: Optional[bytes] = None, s3_uri: Optional[str] = None):
+        """Use Rekognition DetectLabels to check for a 'Person' label in an image."""
+        try:
+            params: Dict[str, Any] = {"MaxLabels": 10, "MinConfidence": 70}
+            if image_bytes is not None:
+                params["Image"] = {"Bytes": image_bytes}
+            elif s3_uri:
+                bucket, key = s3_uri.replace('s3://', '').split('/', 1)
+                params["Image"] = {"S3Object": {"Bucket": bucket, "Name": key}}
+            else:
+                raise ValueError("Either image_bytes or s3_uri must be provided")
+
+            resp = self.rekognition_client.detect_labels(**params)
+            labels = [{"Name": l["Name"], "Confidence": l["Confidence"]} for l in resp.get("Labels", [])]
+            person_detected = any(l["Name"].lower() == "person" and l["Confidence"] >= 70 for l in resp.get("Labels", []))
+            return person_detected, labels
+        except Exception as e:
+            logger.error(f"Error detecting labels: {str(e)}")
+            # Fail open but indicate no person to avoid false alarms
+            return False, []
+
+    def _upload_bytes_to_s3(self, image_bytes: bytes) -> str:
+        """Upload image bytes to the analysis bucket and return the S3 URI."""
+        if not self.video_analysis_bucket:
+            raise ValueError("VIDEO_ANALYSIS_BUCKET is not configured")
+        s3_client = boto3.client('s3')
+        key = f"frames-grid/{datetime.utcnow().strftime('%Y/%m/%d')}/grid-{datetime.utcnow().strftime('%H%M%S')}.jpg"
+        s3_client.put_object(Bucket=self.video_analysis_bucket, Key=key, Body=image_bytes, ContentType='image/jpeg')
+        return f"s3://{self.video_analysis_bucket}/{key}"
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
