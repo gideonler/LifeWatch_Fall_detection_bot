@@ -7,7 +7,7 @@
 from aws_cdk import Stack, CfnOutput
 from constructs import Construct
 from .constructs.lambdas import LambdasConstruct
-from .constructs.bedrock import BedrockSecretsConstruct
+from .constructs.bedrock import BedrockConstruct
 from .constructs.buckets import BucketsConstruct
 from .constructs.kinesis import KinesisConstruct
 from .constructs.notifications import NotificationsConstruct
@@ -34,7 +34,7 @@ class AwsStack(Stack):
         lambdas = LambdasConstruct(self, "Lambdas")
 
         # Create Agent (includes Knowledge Base)
-        # agentSecrets = BedrockSecretsConstruct(self, "BedrockSecrets")
+        agent = BedrockConstruct(self, "BedrockSecrets", lambdas.agent_executor, config)
       
         # Create Kinesis construct
         # kinesis = KinesisConstruct(self, "Kinesis")
@@ -61,5 +61,6 @@ class AwsStack(Stack):
         self.AGENT_INSTRUCTION = config["bedrock_instructions"]["agent_instruction"]
 
         self.LAMBDAS_SOURCE_FOLDER = config["paths"]["lambdas_source_folder"]
+        self.AGENT_API_SCHEMA_DESTINATION_PREFIX = config["paths"]["agent_schema_destination_prefix"]
 
         return config
