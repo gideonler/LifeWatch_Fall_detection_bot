@@ -17,7 +17,7 @@ from constructs import Construct
 LAMBDA_SRC_ROOT = Path(__file__).resolve().parents[1] / "lambdas"
 
 
-class LambdaFunctionsConstruct(Construct):
+class LambdasConstruct(Construct):
 	"""Creates and configures Lambda functions used in the system.
 
 	Functions:

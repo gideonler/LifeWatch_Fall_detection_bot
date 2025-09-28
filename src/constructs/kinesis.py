@@ -16,7 +16,7 @@ except Exception:  # pragma: no cover
     kvs = None  # fallback for type checking
 
 
-class KinesisStreamsConstruct(Construct):
+class KinesisConstruct(Construct):
     """Provision streaming primitives for live detection.
 
     - Kinesis Video Stream: raw camera/video frames (if supported in account/region)

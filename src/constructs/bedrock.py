@@ -9,7 +9,7 @@ from aws_cdk import (
 from constructs import Construct
 
 
-class BedrockIntegrationConstruct(Construct):
+class BedrockSecretsConstruct(Construct):
     """Stores Bedrock Agent and Knowledge Base identifiers in SSM and grants access.
 
     This construct is intentionally light because Bedrock Agents/KBs are often

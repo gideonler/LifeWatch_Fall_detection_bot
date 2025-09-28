@@ -23,4 +23,4 @@ class PollyAccessConstruct(Construct):
             try:
                 grantee.add_to_principal_policy(self.statement)
             except Exception:
-                pass 
+                pass
