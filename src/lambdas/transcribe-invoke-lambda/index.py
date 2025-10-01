@@ -19,8 +19,11 @@ class TranscribeInvokeHandler:
         
         # Get Bedrock configuration from SSM
         self.agent_id = self._get_ssm_parameter('/fall-detection/bedrock/agent-id')
-        self.knowledge_base_id = self._get_ssm_parameter('/fall-detection/bedrock/kb-id')
         self.model_id = self._get_ssm_parameter('/fall-detection/bedrock/model-id')
+
+        # commenting out knowledge base id for now
+        # self.knowledge_base_id = self._get_ssm_parameter('/fall-detection/bedrock/kb-id')
+
         
         # S3 bucket for storing transcription results
         self.transcription_bucket = os.environ.get('TRANSCRIPTION_BUCKET')
@@ -38,6 +41,10 @@ class TranscribeInvokeHandler:
         """
         Process audio file and invoke Bedrock agent for analysis.
         
+        Supports two input modes:
+        1) audio_uri: S3 URI to audio file (legacy)
+        2) audio_base64: base64-encoded audio data directly from Streamlit
+        
         Args:
             event: Lambda event containing audio file information
             
@@ -45,10 +52,14 @@ class TranscribeInvokeHandler:
             Dictionary containing transcription and analysis results
         """
         try:
-            # Extract audio file information from event
+            # Check for direct audio input first
+            if event.get('audio_base64'):
+                return self._process_direct_audio(event)
+            
+            # Legacy path: S3 URI
             audio_uri = event.get('audio_uri')
             if not audio_uri:
-                raise ValueError("audio_uri is required in the event")
+                raise ValueError("audio_uri or audio_base64 is required in the event")
             
             # Start transcription job
             transcription_result = self._transcribe_audio(audio_uri)
@@ -64,7 +75,8 @@ class TranscribeInvokeHandler:
                 "transcription": transcription_result,
                 "bedrock_analysis": bedrock_response,
                 "timestamp": datetime.utcnow().isoformat(),
-                "audio_uri": audio_uri
+                "audio_uri": audio_uri,
+                "input_mode": "s3_uri"
             }
             
             # Store in S3 if bucket is configured
