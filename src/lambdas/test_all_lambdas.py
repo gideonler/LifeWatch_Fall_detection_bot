@@ -157,45 +157,33 @@ def test_video_lambda():
         print(f"Could not import video lambda: {e}")
         print("Make sure you're running from the correct directory")
 
-def test_action_lambda():
-    """Test the action-lambda function."""
+def test_agent_invoke_lambda():
+    """Test the agent-invoke-lambda function."""
     print("\n" + "=" * 60)
-    print("TESTING ACTION LAMBDA")
+    print("TESTING AGENT INVOKE LAMBDA")
     print("=" * 60)
     
     try:
-        from action_lambda.index import handler as action_handler
+        from agent_invoke_lambda.index import handler as agent_handler
         
         # Test cases
         test_cases = [
             {
-                "name": "Fall Detected Action",
+                "name": "Both Inputs Available",
                 "event": {
-                    "bedrock_response": {
-                        "content": "EMERGENCY: Fall detected! The person appears to have fallen and is lying motionless on the floor.",
-                        "confidence": 0.95,
-                        "timestamp": datetime.utcnow().isoformat()
-                    }
+                    "event_id": "20240101T120000Z"
                 }
             },
             {
-                "name": "Emergency Action",
+                "name": "Audio Only",
                 "event": {
-                    "bedrock_response": {
-                        "content": "CRITICAL EMERGENCY: The person is unconscious and needs immediate medical attention.",
-                        "confidence": 0.98,
-                        "timestamp": datetime.utcnow().isoformat()
-                    }
+                    "event_id": "20240101T120030Z"
                 }
             },
             {
-                "name": "Normal Activity Action",
+                "name": "Video Only",
                 "event": {
-                    "bedrock_response": {
-                        "content": "Normal activity confirmed. The person is walking around normally and appears to be in good health.",
-                        "confidence": 0.85,
-                        "timestamp": datetime.utcnow().isoformat()
-                    }
+                    "event_id": "20240101T120100Z"
                 }
             }
         ]
@@ -203,21 +191,24 @@ def test_action_lambda():
         for test_case in test_cases:
             print(f"\n--- {test_case['name']} ---")
             try:
-                result = action_handler(test_case['event'], {})
+                result = agent_handler(test_case['event'], {})
                 print(f"Status Code: {result['statusCode']}")
                 if result['statusCode'] == 200:
                     body = json.loads(result['body'])
                     print(f"Message: {body['message']}")
-                    print(f"Actions Count: {body.get('actions_count', 'N/A')}")
-                    if 'execution_summary' in body:
-                        print(f"Execution Summary: {body['execution_summary']}")
+                    print(f"Event ID: {body.get('results', {}).get('event_id', 'N/A')}")
+                    if 'results' in body:
+                        results = body['results']
+                        print(f"Has Audio: {results.get('combined_analysis', {}).get('has_audio', 'N/A')}")
+                        print(f"Has Video: {results.get('combined_analysis', {}).get('has_video', 'N/A')}")
+                        print(f"Priority Level: {results.get('combined_analysis', {}).get('priority_level', 'N/A')}")
                 else:
                     print(f"Error: {result['body']}")
             except Exception as e:
                 print(f"Error: {str(e)}")
                 
     except ImportError as e:
-        print(f"Could not import action lambda: {e}")
+        print(f"Could not import agent invoke lambda: {e}")
         print("Make sure you're running from the correct directory")
 
 def test_integration_flow():
@@ -228,7 +219,7 @@ def test_integration_flow():
     
     print("This would test the complete flow:")
     print("1. Audio/Video → Transcribe/Video Lambda")
-    print("2. Bedrock Analysis → Action Lambda")
+    print("2. Bedrock Analysis → Agent Invoke Lambda")
     print("3. SNS Notifications + Polly Synthesis")
     print("\nNote: Full integration testing requires AWS services to be configured.")
 
@@ -251,10 +242,10 @@ def generate_aws_test_commands():
         "  --payload file://test-events/video-test.json \\",
         "  response.json",
         "",
-        "# Test Action Lambda",
+        "# Test Agent Invoke Lambda",
         "aws lambda invoke \\",
-        "  --function-name action-lambda \\",
-        "  --payload file://test-events/action-fall-detected.json \\",
+        "  --function-name agent-invoke-lambda \\",
+        "  --payload file://test-events/agent-invoke-test.json \\",
         "  response.json",
         "",
         "# View response",
@@ -273,7 +264,7 @@ def main():
     # Test individual lambdas
     test_transcribe_lambda()
     test_video_lambda()
-    test_action_lambda()
+    test_agent_invoke_lambda()
     
     # Test integration flow
     test_integration_flow()

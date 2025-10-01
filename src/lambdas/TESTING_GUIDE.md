@@ -7,7 +7,7 @@ This guide covers how to test all the lambda functions in the fall detection sys
 The system has three main lambda functions:
 1. **transcribe-invoke-lambda** - Processes audio files
 2. **video-invoke-lambda** - Processes video files  
-3. **action-lambda** - Executes actions based on Bedrock analysis
+3. **agent-invoke-lambda** - Combines inputs and invokes Bedrock agent
 
 ## Testing Methods
 
