@@ -14,7 +14,6 @@ class TranscribeInvokeHandler:
     
     def __init__(self):
         self.transcribe_client = boto3.client('transcribe')
-        self.bedrock_agent_runtime = boto3.client('bedrock-agent-runtime')
         self.ssm_client = boto3.client('ssm')
         
         # Get Bedrock configuration from SSM
@@ -25,8 +24,10 @@ class TranscribeInvokeHandler:
         # self.knowledge_base_id = self._get_ssm_parameter('/fall-detection/bedrock/kb-id')
 
         
-        # S3 bucket for storing transcription results
+        # Buckets and pipeline mode
         self.transcription_bucket = os.environ.get('TRANSCRIPTION_BUCKET')
+        self.events_bucket = os.environ.get('EVENTS_BUCKET')
+        self.combined_pipeline = os.environ.get('COMBINED_PIPELINE', 'false').lower() == 'true'
         
     def _get_ssm_parameter(self, parameter_name: str) -> Optional[str]:
         """Get parameter value from SSM Parameter Store."""
@@ -67,8 +68,9 @@ class TranscribeInvokeHandler:
             if not transcription_result:
                 raise ValueError("Transcription failed")
             
-            # Invoke Bedrock agent with transcription
-            bedrock_response = self._invoke_bedrock_agent(transcription_result)
+            # Determine event_id
+            event_id = event.get('event_id') or self._compute_event_id()
+            bedrock_response = None  # Bedrock invocation disabled for this function
             
             # Store results
             results = {
@@ -76,11 +78,15 @@ class TranscribeInvokeHandler:
                 "bedrock_analysis": bedrock_response,
                 "timestamp": datetime.utcnow().isoformat(),
                 "audio_uri": audio_uri,
-                "input_mode": "s3_uri"
+                "input_mode": "s3_uri",
+                "event_id": event_id,
+                "audio_present": bool(transcription_result)
             }
             
-            # Store in S3 if bucket is configured
-            if self.transcription_bucket:
+            # Store in events bucket if configured
+            if self.events_bucket:
+                self._store_event_results(results, key=f"transcribe/{event_id}.json")
+            elif self.transcription_bucket:
                 self._store_results(results)
             
             return results
@@ -88,6 +94,13 @@ class TranscribeInvokeHandler:
         except Exception as e:
             logger.error(f"Error processing audio: {str(e)}")
             raise
+
+    def _compute_event_id(self) -> str:
+        import math
+        now = datetime.utcnow()
+        epoch = int(now.timestamp())
+        window = (epoch // 30) * 30
+        return datetime.utcfromtimestamp(window).strftime('%Y%m%dT%H%M%SZ')
     
     def _transcribe_audio(self, audio_uri: str) -> Optional[str]:
         """Transcribe audio file using Amazon Transcribe."""
@@ -173,89 +186,44 @@ class TranscribeInvokeHandler:
         formatted_transcript = f"Audio Transcript:\n{transcript}\n\n"
         formatted_transcript += "Speaker Analysis: Multiple speakers detected in audio stream."
         return formatted_transcript
-    
-    def _invoke_bedrock_agent(self, transcription: str) -> Dict[str, Any]:
-        """Invoke Bedrock agent with transcription for elderly safety analysis."""
-        try:
-            if not self.agent_id:
-                logger.warning("Bedrock agent ID not configured, returning mock response")
-                return self._get_mock_bedrock_response(transcription)
-            
-            # Prepare input for Bedrock agent
-            input_text = f"""
-            Please analyze the following audio transcription for elderly safety monitoring:
-            
-            Transcription: {transcription}
-            
-            Focus on:
-            1. Fall detection indicators
-            2. Emergency situations
-            3. Unusual activity patterns
-            4. Normal activity confirmation
-            5. Any concerning sounds or speech patterns
-            
-            Provide a detailed analysis with priority level and recommended actions.
-            """
-            
-            # Invoke Bedrock agent
-            response = self.bedrock_agent_runtime.invoke_agent(
-                agentId=self.agent_id,
-                sessionId=f"session-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}",
-                inputText=input_text
-            )
-            
-            # Parse response
-            bedrock_response = self._parse_bedrock_response(response)
-            return bedrock_response
-            
-        except Exception as e:
-            logger.error(f"Error invoking Bedrock agent: {str(e)}")
-            return self._get_mock_bedrock_response(transcription)
-    
-    def _parse_bedrock_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
-        """Parse Bedrock agent response."""
-        try:
-            # Read the response stream
-            response_body = response['completion']
-            content = ""
-            
-            for event in response_body:
-                if 'chunk' in event:
-                    chunk = event['chunk']
-                    if 'bytes' in chunk:
-                        content += chunk['bytes'].decode('utf-8')
-            
-            return {
-                "content": content,
-                "timestamp": datetime.utcnow().isoformat(),
-                "source": "bedrock_agent"
-            }
-            
-        except Exception as e:
-            logger.error(f"Error parsing Bedrock response: {str(e)}")
-            return {"content": "Error parsing Bedrock response", "error": str(e)}
-    
-    def _get_mock_bedrock_response(self, transcription: str) -> Dict[str, Any]:
-        """Get mock Bedrock response for testing."""
-        # Simple keyword-based analysis
-        transcription_lower = transcription.lower()
-        
-        if any(word in transcription_lower for word in ['fall', 'fell', 'help', 'emergency']):
-            analysis = "EMERGENCY: Potential fall or emergency situation detected in audio. Immediate attention required."
-            priority = "HIGH"
-        elif any(word in transcription_lower for word in ['unusual', 'strange', 'concerning']):
-            analysis = "WARNING: Unusual activity detected in audio. Monitor closely."
-            priority = "MEDIUM"
-        else:
-            analysis = "NORMAL: Audio indicates normal activity patterns. No immediate concerns."
-            priority = "LOW"
-        
-        return {
-            "content": f"Audio Analysis: {analysis}\nPriority: {priority}\nTranscription: {transcription[:200]}...",
+
+    def _process_direct_audio(self, event: Dict[str, Any]) -> Dict[str, Any]:
+        """Accept base64 audio, stage to S3, run Transcribe, and emit event-scoped results."""
+        import base64
+        s3_client = boto3.client('s3')
+        if not self.transcription_bucket and not self.events_bucket:
+            raise ValueError("Either TRANSCRIPTION_BUCKET or EVENTS_BUCKET must be configured to stage audio")
+
+        audio_b64 = event['audio_base64']
+        audio_bytes = base64.b64decode(audio_b64)
+        bucket = self.transcription_bucket or self.events_bucket
+        key = f"audio-inline/{datetime.utcnow().strftime('%Y/%m/%d')}/audio-{datetime.utcnow().strftime('%H%M%S')}.wav"
+        s3_client.put_object(Bucket=bucket, Key=key, Body=audio_bytes, ContentType='audio/wav')
+        audio_uri = f"s3://{bucket}/{key}"
+
+        transcription_result = self._transcribe_audio(audio_uri)
+        event_id = event.get('event_id') or self._compute_event_id()
+
+        bedrock_response = None  # Bedrock invocation disabled for this function
+
+        results = {
+            "transcription": transcription_result,
+            "bedrock_analysis": bedrock_response,
             "timestamp": datetime.utcnow().isoformat(),
-            "source": "mock_analysis",
-            "priority": priority
+            "audio_uri": audio_uri,
+            "input_mode": "base64",
+            "event_id": event_id,
+            "audio_present": bool(transcription_result)
         }
+
+        if self.events_bucket:
+            self._store_event_results(results, key=f"transcribe/{event_id}.json")
+        else:
+            self._store_results(results)
+
+        return results
+    
+    # Bedrock invocation intentionally omitted in this lambda
     
     def _store_results(self, results: Dict[str, Any]) -> None:
         """Store results in S3 bucket."""

@@ -20,7 +20,6 @@ class VideoInvokeHandler:
     """
     
     def __init__(self):
-        self.bedrock_agent_runtime = boto3.client('bedrock-agent-runtime')
         self.ssm_client = boto3.client('ssm')
         self.rekognition_client = boto3.client('rekognition')
         
@@ -31,8 +30,10 @@ class VideoInvokeHandler:
         # commenting out knowledge base id for now
         # self.knowledge_base_id = self._get_ssm_parameter('/fall-detection/bedrock/kb-id')
         
-        # S3 bucket for storing video analysis results
+        # S3 buckets and pipeline mode
         self.video_analysis_bucket = os.environ.get('VIDEO_ANALYSIS_BUCKET')
+        self.events_bucket = os.environ.get('EVENTS_BUCKET')
+        self.combined_pipeline = os.environ.get('COMBINED_PIPELINE', 'false').lower() == 'true'
         
     def _get_ssm_parameter(self, parameter_name: str) -> Optional[str]:
         """Get parameter value from SSM Parameter Store."""
@@ -62,17 +63,22 @@ class VideoInvokeHandler:
                 raise ValueError("video_uri or image_grid_{base64|s3_uri} is required in the event")
 
             video_analysis = self._analyze_video(video_uri)
-            bedrock_response = self._invoke_bedrock_agent(video_analysis, context_uri=video_uri)
+            event_id = event.get('event_id') or self._compute_event_id()
+            
+            bedrock_response = None  # Bedrock invocation disabled in this function
 
             results = {
                 "analysis": video_analysis,
                 "bedrock_analysis": bedrock_response,
                 "timestamp": datetime.utcnow().isoformat(),
                 "context_uri": video_uri,
-                "input_mode": "video"
+                "input_mode": "video",
+                "event_id": event_id
             }
 
-            if self.video_analysis_bucket:
+            if self.events_bucket:
+                self._store_event_results(results, key=f"video/{event_id}.json")
+            elif self.video_analysis_bucket:
                 self._store_results(results)
 
             return results
@@ -263,94 +269,7 @@ class VideoInvokeHandler:
             "source": "mock_analysis"
         }
     
-    def _invoke_bedrock_agent(self, video_analysis: Dict[str, Any], context_uri: str) -> Dict[str, Any]:
-        """Invoke Bedrock agent with analysis summary and a context URI (video or image)."""
-        try:
-            if not self.agent_id:
-                logger.warning("Bedrock agent ID not configured, returning mock response")
-                return self._get_mock_bedrock_response(video_analysis)
-            
-            # Prepare input for Bedrock agent
-            input_text = f"""
-            Please analyze the following visual analysis for elderly safety monitoring:
-            
-            Analysis Summary:
-            - Person Count: {video_analysis.get('person_count', 0)}
-            - Safety Score: {video_analysis.get('safety_score', 0)}/100
-            - Fall Indicators: {video_analysis.get('fall_indicators', [])}
-            - Movement Analysis: {json.dumps(video_analysis.get('movement_analysis', []), indent=2)}
-            
-            Context URI: {context_uri}
-            
-            Focus on:
-            1. Fall detection based on person positioning and movement
-            2. Emergency situations requiring immediate attention
-            3. Unusual activity patterns or behaviors
-            4. Normal activity confirmation
-            5. Safety risk assessment
-            
-            Provide a detailed analysis with priority level and recommended actions.
-            """
-            
-            # Invoke Bedrock agent
-            response = self.bedrock_agent_runtime.invoke_agent(
-                agentId=self.agent_id,
-                sessionId=f"session-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}",
-                inputText=input_text
-            )
-            
-            # Parse response
-            bedrock_response = self._parse_bedrock_response(response)
-            return bedrock_response
-            
-        except Exception as e:
-            logger.error(f"Error invoking Bedrock agent: {str(e)}")
-            return self._get_mock_bedrock_response(video_analysis)
-    
-    def _parse_bedrock_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
-        """Parse Bedrock agent response."""
-        try:
-            # Read the response stream
-            response_body = response['completion']
-            content = ""
-            
-            for event in response_body:
-                if 'chunk' in event:
-                    chunk = event['chunk']
-                    if 'bytes' in chunk:
-                        content += chunk['bytes'].decode('utf-8')
-            
-            return {
-                "content": content,
-                "timestamp": datetime.utcnow().isoformat(),
-                "source": "bedrock_agent"
-            }
-            
-        except Exception as e:
-            logger.error(f"Error parsing Bedrock response: {str(e)}")
-            return {"content": "Error parsing Bedrock response", "error": str(e)}
-    
-    def _get_mock_bedrock_response(self, video_analysis: Dict[str, Any]) -> Dict[str, Any]:
-        """Get mock Bedrock response for testing."""
-        safety_score = video_analysis.get('safety_score', 0)
-        fall_indicators = video_analysis.get('fall_indicators', [])
-        
-        if safety_score < 50 or fall_indicators:
-            analysis = "EMERGENCY: High risk situation detected in video. Immediate attention required."
-            priority = "HIGH"
-        elif safety_score < 75:
-            analysis = "WARNING: Moderate risk detected in video. Monitor closely."
-            priority = "MEDIUM"
-        else:
-            analysis = "NORMAL: Video shows normal activity patterns. No immediate concerns."
-            priority = "LOW"
-        
-        return {
-            "content": f"Video Analysis: {analysis}\nPriority: {priority}\nSafety Score: {safety_score}/100",
-            "timestamp": datetime.utcnow().isoformat(),
-            "source": "mock_analysis",
-            "priority": priority
-        }
+    # Bedrock invocation intentionally omitted in this lambda
     
     def _store_results(self, results: Dict[str, Any]) -> None:
         """Store results in S3 bucket."""
@@ -403,7 +322,7 @@ class VideoInvokeHandler:
         if not person_detected:
             return {
                 "analysis": analysis,
-                "bedrock_analysis": self._get_mock_bedrock_response(analysis),
+                "bedrock_analysis": None if self.combined_pipeline else self._get_mock_bedrock_response(analysis),
                 "context_uri": grid_s3_uri or "inline-bytes",
                 "input_mode": "image_grid",
                 "note": "No person detected; skipping Bedrock invocation"
@@ -413,17 +332,20 @@ class VideoInvokeHandler:
         if not grid_s3_uri:
             grid_s3_uri = self._upload_bytes_to_s3(image_bytes)
 
-        bedrock_response = self._invoke_bedrock_agent(analysis, context_uri=grid_s3_uri)
+        bedrock_response = None  # Bedrock invocation disabled in this function
 
         results = {
             "analysis": analysis,
             "bedrock_analysis": bedrock_response,
             "timestamp": datetime.utcnow().isoformat(),
             "context_uri": grid_s3_uri,
-            "input_mode": "image_grid"
+            "input_mode": "image_grid",
+            "event_id": event.get('event_id') or self._compute_event_id()
         }
 
-        if self.video_analysis_bucket:
+        if self.events_bucket:
+            self._store_event_results(results, key=f"video/{results['event_id']}.json")
+        elif self.video_analysis_bucket:
             self._store_results(results)
 
         return results
@@ -457,6 +379,26 @@ class VideoInvokeHandler:
         key = f"frames-grid/{datetime.utcnow().strftime('%Y/%m/%d')}/grid-{datetime.utcnow().strftime('%H%M%S')}.jpg"
         s3_client.put_object(Bucket=self.video_analysis_bucket, Key=key, Body=image_bytes, ContentType='image/jpeg')
         return f"s3://{self.video_analysis_bucket}/{key}"
+
+    def _compute_event_id(self) -> str:
+        import math
+        now = datetime.utcnow()
+        epoch = int(now.timestamp())
+        window = (epoch // 30) * 30
+        return datetime.utcfromtimestamp(window).strftime('%Y%m%dT%H%M%SZ')
+
+    def _store_event_results(self, results: Dict[str, Any], *, key: str) -> None:
+        try:
+            s3_client = boto3.client('s3')
+            s3_client.put_object(
+                Bucket=self.events_bucket,
+                Key=f"events/{key}",
+                Body=json.dumps(results, indent=2),
+                ContentType='application/json'
+            )
+            logger.info(f"Stored event results: s3://{self.events_bucket}/events/{key}")
+        except Exception as e:
+            logger.error(f"Error storing event results in S3: {str(e)}")
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
