@@ -11,8 +11,8 @@ with open("project_config.json", encoding="utf-8") as f:
 stack_name = config["names"]["stack_name"]
 
 appStack = AwsStack(
-    app,
-    stack_name,
+    scope=app,
+    construct_id=stack_name,
     env=cdk.Environment(
         account=os.getenv("CDK_DEFAULT_ACCOUNT"), region=os.getenv("CDK_DEFAULT_REGION")
     ),

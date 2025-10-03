@@ -9,9 +9,11 @@ from constructs import Construct
 from .constructs.lambdas import LambdasConstruct
 from .constructs.bedrock import BedrockConstruct
 from .constructs.buckets import BucketsConstruct
-from .constructs.kinesis import KinesisConstruct
+# from .constructs.kinesis import KinesisConstruct
 from .constructs.notifications import NotificationsConstruct
 from .constructs.polly import PollyAccessConstruct
+from .constructs.rekognition import RekognitionConstruct
+from .constructs.transcribe import TranscribeConstruct
 import json
 
 
@@ -25,25 +27,44 @@ class AwsStack(Stack):
         # Create SNS topics
         topics = NotificationsConstruct(self, "Notifications")
 
-        # Create database resources
-        bucket = BucketsConstruct(
+        # Create S3 resources
+        buckets = BucketsConstruct(
             self, "Buckets", bucket_name_prefix=construct_id.lower()
         )
-
+        
         # Create Lambda resources
         lambdas = LambdasConstruct(self, "Lambdas")
+        buckets.audio_bucket.grant_read(lambdas.transcribe_lambda)
+        buckets.image_bucket.grant_read(lambdas.video_invoke)
 
         # Create Agent (includes Knowledge Base)
         agent = BedrockConstruct(self, "BedrockSecrets", lambdas.agent_executor, config)
-      
+        buckets.events_bucket.grant_read_write(self.agent)
+
         # Create Kinesis construct
         # kinesis = KinesisConstruct(self, "Kinesis")
 
         # Create Polly construct
         polly = PollyAccessConstruct(self, "PollyAccess")
-
-        CfnOutput(self, "EventsBucket", value=bucket.events_bucket.bucket_name)
-        CfnOutput(self, "ImagesBucket", value=bucket.images_bucket.bucket_name)
+        
+        #Create Rekognition construct
+        rekognition = RekognitionConstruct(
+            self,
+            "Rekognition",
+            image_bucket=buckets.image_bucket,
+            video_invoke_lambda=lambdas.video_invoke,
+        )
+        
+        # Create Transcribe construct
+        transcribe = TranscribeConstruct(
+            self,
+            "Transcribe",
+            audio_bucket=buckets.audio_bucket,
+            transcribe_invoke_lambda=lambdas.transcribe_invoke
+        )
+        
+        CfnOutput(self, "EventsBucket", value=buckets.events_bucket.bucket_name)
+        CfnOutput(self, "ImagesBucket", value=buckets.images_bucket.bucket_name)
 
 
     def get_config(self):
