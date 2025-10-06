@@ -52,7 +52,11 @@ class LambdasConstruct(Construct):
 		self.video_invoke = self._create_python_lambda(
 			"VideoInvoke",
 			LAMBDA_SRC_ROOT / "video-invoke-lambda",
-			environment=common_env,
+			environment={
+				**common_env,
+				"AGENT_INVOKE_LAMBDA_NAME": self.agent_invoke.function_name,
+				"IMAGE_BUCKET": buckets.images_bucket.bucket_name,
+			},
 			timeout=Duration.seconds(60),
 			memory_mb=1024,
 		)

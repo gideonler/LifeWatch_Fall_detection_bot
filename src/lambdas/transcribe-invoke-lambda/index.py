@@ -9,7 +9,7 @@ from datetime import datetime
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-class TranscribeInvokeHandler:
+class TranscribeInvokeHandler(Construct):
     """Handles audio transcription and Bedrock agent invocation for elderly safety monitoring."""
     
     def __init__(self):
