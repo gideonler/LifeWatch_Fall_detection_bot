@@ -1,371 +1,344 @@
-import json
-import logging
-import os
 import boto3
-from typing import Dict, Any, Optional, Tuple
-from datetime import datetime
+import json
+import base64
+from datetime import datetime, timezone, timedelta
+import uuid
+from typing import List, Dict, Any
 
-# Configure logging
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+BUCKET = "elderly-home-monitoring-images"
+PREFIX = "detected-images/datestr=20251012/"
+KNOWLEDGE_BASE_PREFIX = "knowledge-base/"
 
-class AgentInvokeHandler:
-    """Handles combining transcribe and video outputs and invoking Bedrock agent."""
+# Initialize clients
+bedrock_runtime = boto3.client("bedrock-runtime", region_name="ap-southeast-1")
+s3 = boto3.client("s3")
+
+# Model ID
+MODEL_ID = "anthropic.claude-3-5-sonnet-20240620-v1:0"
+
+# Enhanced system prompt with knowledge base context
+SYSTEM_PROMPT = """
+You are an AI language model assistant specialized in monitoring people in their living spaces. Be it out doors or in doors. 
+
+You are to watch for any potentially concerning events. These include falls, medical emergencies, unusual behavior, or safety concerns that require immediate attention.
+
+I have attached an image from a camera feed. Look for signs of distress, falls, medical emergencies, or any situation where the person might need help.
+
+You must:
+1. Identify **any person** in the image — even small or distant figures.
+2. Examine **posture, body angle, and ground contact** to detect falls or unusual positions.
+3. Notice **unusual stillness or lying posture** compared to surroundings (e.g., on the floor, couch edge, or bathroom).
+4. Consider **context clues** — body near furniture, motion blur suggesting collapse, limbs in unnatural orientation.
+5. Do not ignore small figures — zoom in mentally and judge whether they may have fallen.
+
+You will also be provided with context from previous similar events to help you make better decisions.
+
+Your job is to determine the severity level.
+Severity levels can take on the following values:
+    0: No issues detected requiring immediate attention
+    1: Possible issue detected requiring attention (soft alert)
+    2: Issue requiring immediate action detected (high alert)
+
+Please respond with the following JSON output format:
+{"alert_level":int,
+"reason":string,
+"log_file_name":string,
+"brief_description": string,
+"full_description": string}
+
+Do not add any preamble or explanation - your correctly formatted JSON response will trigger the appropriate alerts.
+"""
+
+def create_multimodal_prompt(image_data: bytes, text: str, content_type: str, system_prompt: str = None, max_tokens: int = 1000, temperature: float = 0.5, model_id: str = MODEL_ID):
+    """Create a multimodal prompt structure - handles both Claude and Mistral formats"""
     
-    def __init__(self):
-        self.bedrock_agent_runtime = boto3.client('bedrock-agent-runtime')
-        self.ssm_client = boto3.client('ssm')
-        self.s3_client = boto3.client('s3')
-        
-        # Get Bedrock configuration from SSM
-        self.agent_id = self._get_ssm_parameter('/fall-detection/bedrock/agent-id')
-        self.model_id = self._get_ssm_parameter('/fall-detection/bedrock/model-id')
-        
-        # S3 bucket for event storage
-        self.events_bucket = os.environ.get('EVENTS_BUCKET')
-        if not self.events_bucket:
-            raise ValueError("EVENTS_BUCKET environment variable is required")
-        
-    def _get_ssm_parameter(self, parameter_name: str) -> Optional[str]:
-        """Get parameter value from SSM Parameter Store."""
-        try:
-            response = self.ssm_client.get_parameter(Name=parameter_name)
-            return response['Parameter']['Value']
-        except Exception as e:
-            logger.warning(f"Could not retrieve parameter {parameter_name}: {str(e)}")
-            return None
-    
-    def process_agent_input(self, event: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Process transcribe and/or video inputs for a specific event_id.
-        Invokes Bedrock as long as at least one input (video OR transcribe) is available.
-        
-        Args:
-            event: Lambda event containing event_id
-            
-        Returns:
-            Dictionary containing combined analysis and Bedrock results
-        """
-        try:
-            # Extract event_id from event
-            event_id = event.get('event_id')
-            if not event_id:
-                raise ValueError("event_id is required in the event")
-            
-            # Load transcribe and video results for this event_id
-            transcribe_data, video_data = self._load_event_data(event_id)
-            
-            # Check if we have at least one input
-            if not transcribe_data and not video_data:
-                logger.warning(f"No transcribe or video data found for event {event_id}")
-                return {
-                    "event_id": event_id,
-                    "transcribe_data": None,
-                    "video_data": None,
-                    "combined_analysis": {
-                        "event_id": event_id,
-                        "has_audio": False,
-                        "has_video": False,
-                        "overall_safety_score": 100,
-                        "priority_level": "UNKNOWN",
-                        "combined_indicators": [],
-                        "note": "No input data available"
-                    },
-                    "bedrock_analysis": None,
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "status": "no_data"
+    if "anthropic" in model_id.lower():
+        prompt = {
+            "anthropic_version": "bedrock-2023-05-31",
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": content_type,
+                                "data": base64.b64encode(image_data).decode("utf-8"),
+                            },
+                        },
+                        {"type": "text", "text": text},
+                    ],
                 }
-            
-            # Combine the data (handles cases where only one input is available)
-            combined_data = self._combine_analysis(transcribe_data, video_data, event_id)
-            
-            # Invoke Bedrock agent with combined data (as long as we have at least one input)
-            bedrock_response = self._invoke_bedrock_agent(combined_data)
-            
-            # Store combined results
-            results = {
-                "event_id": event_id,
-                "transcribe_data": transcribe_data,
-                "video_data": video_data,
-                "combined_analysis": combined_data,
-                "bedrock_analysis": bedrock_response,
-                "timestamp": datetime.utcnow().isoformat(),
-                "status": "success"
-            }
-            
-            # Store combined results in S3
-            self._store_combined_results(results, event_id)
-            
-            return results
-            
-        except Exception as e:
-            logger.error(f"Error processing combined input: {str(e)}")
-            raise
-    
-    def _load_event_data(self, event_id: str) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
-        """Load transcribe and video data for the given event_id."""
-        transcribe_data = None
-        video_data = None
-        
-        try:
-            # Load transcribe data
-            transcribe_key = f"events/transcribe/{event_id}.json"
-            try:
-                response = self.s3_client.get_object(Bucket=self.events_bucket, Key=transcribe_key)
-                transcribe_data = json.loads(response['Body'].read().decode('utf-8'))
-                logger.info(f"Loaded transcribe data for event {event_id}")
-            except self.s3_client.exceptions.NoSuchKey:
-                logger.warning(f"No transcribe data found for event {event_id}")
-            except Exception as e:
-                logger.error(f"Error loading transcribe data: {str(e)}")
-            
-            # Load video data
-            video_key = f"events/video/{event_id}.json"
-            try:
-                response = self.s3_client.get_object(Bucket=self.events_bucket, Key=video_key)
-                video_data = json.loads(response['Body'].read().decode('utf-8'))
-                logger.info(f"Loaded video data for event {event_id}")
-            except self.s3_client.exceptions.NoSuchKey:
-                logger.warning(f"No video data found for event {event_id}")
-            except Exception as e:
-                logger.error(f"Error loading video data: {str(e)}")
-            
-            return transcribe_data, video_data
-            
-        except Exception as e:
-            logger.error(f"Error loading event data: {str(e)}")
-            return None, None
-    
-    def _combine_analysis(self, transcribe_data: Optional[Dict[str, Any]], 
-                         video_data: Optional[Dict[str, Any]], 
-                         event_id: str) -> Dict[str, Any]:
-        """Combine transcribe and/or video analysis into a unified summary.
-        Handles cases where only one input (video OR transcribe) is available."""
-        
-        combined = {
-            "event_id": event_id,
-            "timestamp": datetime.utcnow().isoformat(),
-            "has_audio": transcribe_data is not None and transcribe_data.get('audio_present', False),
-            "has_video": video_data is not None,
-            "audio_analysis": {},
-            "video_analysis": {},
-            "combined_indicators": [],
-            "overall_safety_score": 100,
-            "priority_level": "LOW",
-            "input_sources": []
+            ],
         }
-        
-        # Process audio data
-        if transcribe_data:
-            combined["input_sources"].append("audio")
-            combined["audio_analysis"] = {
-                "transcription": transcribe_data.get('transcription', ''),
-                "audio_present": transcribe_data.get('audio_present', False),
-                "input_mode": transcribe_data.get('input_mode', 'unknown')
-            }
-            
-            # Extract audio-based indicators
-            transcription = transcribe_data.get('transcription', '').lower()
-            if any(word in transcription for word in ['fall', 'fell', 'help', 'emergency']):
-                combined["combined_indicators"].append("audio_emergency")
-                combined["priority_level"] = "HIGH"
-            elif any(word in transcription for word in ['unusual', 'strange', 'concerning']):
-                combined["combined_indicators"].append("audio_unusual")
-                if combined["priority_level"] == "LOW":
-                    combined["priority_level"] = "MEDIUM"
-        
-        # Process video data
-        if video_data:
-            combined["input_sources"].append("video")
-            analysis = video_data.get('analysis', {})
-            combined["video_analysis"] = {
-                "person_count": analysis.get('person_count', 0),
-                "safety_score": analysis.get('safety_score', 100),
-                "fall_indicators": analysis.get('fall_indicators', []),
-                "movement_analysis": analysis.get('movement_analysis', []),
-                "input_mode": video_data.get('input_mode', 'unknown')
-            }
-            
-            # Extract video-based indicators
-            fall_indicators = analysis.get('fall_indicators', [])
-            if fall_indicators:
-                combined["combined_indicators"].extend(fall_indicators)
-                combined["priority_level"] = "HIGH"
-            
-            # Update overall safety score based on video
-            video_safety = analysis.get('safety_score', 100)
-            combined["overall_safety_score"] = min(combined["overall_safety_score"], video_safety)
-        
-        # Determine final priority level based on available inputs
-        if not combined["has_audio"] and not combined["has_video"]:
-            combined["priority_level"] = "UNKNOWN"
-        elif combined["priority_level"] == "LOW" and combined["overall_safety_score"] < 75:
-            combined["priority_level"] = "MEDIUM"
-        
-        # Add note about input availability
-        if len(combined["input_sources"]) == 1:
-            combined["note"] = f"Analysis based on {combined['input_sources'][0]} input only"
-        elif len(combined["input_sources"]) == 2:
-            combined["note"] = "Analysis based on both audio and video inputs"
-        
-        return combined
-    
-    def _invoke_bedrock_agent(self, combined_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Invoke Bedrock agent with combined analysis."""
-        try:
-            if not self.agent_id:
-                logger.warning("Bedrock agent ID not configured, returning mock response")
-                return self._get_mock_bedrock_response(combined_data)
-            
-            # Prepare comprehensive input for Bedrock agent
-            input_sources = combined_data.get('input_sources', [])
-            note = combined_data.get('note', '')
-            
-            input_text = f"""
-            Please analyze the following data for elderly safety monitoring:
-            
-            Event ID: {combined_data['event_id']}
-            Input Sources: {', '.join(input_sources) if input_sources else 'None'}
-            Note: {note}
-            Overall Safety Score: {combined_data['overall_safety_score']}/100
-            Priority Level: {combined_data['priority_level']}
-            
-            Audio Analysis:
-            - Available: {combined_data['has_audio']}
-            - Transcription: {combined_data['audio_analysis'].get('transcription', 'No audio available')}
-            - Audio Present: {combined_data['audio_analysis'].get('audio_present', False)}
-            
-            Video Analysis:
-            - Available: {combined_data['has_video']}
-            - Person Count: {combined_data['video_analysis'].get('person_count', 0)}
-            - Safety Score: {combined_data['video_analysis'].get('safety_score', 100)}/100
-            - Fall Indicators: {combined_data['video_analysis'].get('fall_indicators', [])}
-            - Movement Analysis: {json.dumps(combined_data['video_analysis'].get('movement_analysis', []), indent=2)}
-            
-            Combined Indicators: {combined_data['combined_indicators']}
-            
-            Focus on:
-            1. Fall detection based on available evidence (audio and/or video)
-            2. Emergency situations requiring immediate attention
-            3. Unusual activity patterns or behaviors
-            4. Normal activity confirmation
-            5. Safety risk assessment considering available modalities
-            
-            Note: Analysis is based on {len(input_sources)} input source(s): {', '.join(input_sources) if input_sources else 'none'}.
-            
-            Provide a detailed analysis with priority level and recommended actions.
-            """
-            
-            # Invoke Bedrock agent
-            response = self.bedrock_agent_runtime.invoke_agent(
-                agentId=self.agent_id,
-                sessionId=f"session-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}",
-                inputText=input_text
-            )
-            
-            # Parse response
-            bedrock_response = self._parse_bedrock_response(response)
-            return bedrock_response
-            
-        except Exception as e:
-            logger.error(f"Error invoking Bedrock agent: {str(e)}")
-            return self._get_mock_bedrock_response(combined_data)
-    
-    def _parse_bedrock_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
-        """Parse Bedrock agent response."""
-        try:
-            # Read the response stream
-            response_body = response['completion']
-            content = ""
-            
-            for event in response_body:
-                if 'chunk' in event:
-                    chunk = event['chunk']
-                    if 'bytes' in chunk:
-                        content += chunk['bytes'].decode('utf-8')
-            
-            return {
-                "content": content,
-                "timestamp": datetime.utcnow().isoformat(),
-                "source": "bedrock_agent"
-            }
-            
-        except Exception as e:
-            logger.error(f"Error parsing Bedrock response: {str(e)}")
-            return {"content": "Error parsing Bedrock response", "error": str(e)}
-    
-    def _get_mock_bedrock_response(self, combined_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Get mock Bedrock response for testing."""
-        priority = combined_data.get('priority_level', 'LOW')
-        safety_score = combined_data.get('overall_safety_score', 100)
-        indicators = combined_data.get('combined_indicators', [])
-        
-        if priority == "HIGH" or safety_score < 50 or indicators:
-            analysis = "EMERGENCY: High risk situation detected. Immediate attention required."
-        elif priority == "MEDIUM" or safety_score < 75:
-            analysis = "WARNING: Moderate risk detected. Monitor closely."
-        else:
-            analysis = "NORMAL: Activity patterns appear normal. No immediate concerns."
-        
-        return {
-            "content": f"Combined Analysis: {analysis}\nPriority: {priority}\nSafety Score: {safety_score}/100\nIndicators: {indicators}",
-            "timestamp": datetime.utcnow().isoformat(),
-            "source": "mock_analysis",
-            "priority": priority
+        if system_prompt:
+            prompt["system"] = system_prompt
+    else:
+        prompt = {
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": content_type,
+                                "data": base64.b64encode(image_data).decode("utf-8"),
+                            },
+                        },
+                        {"type": "text", "text": text},
+                    ],
+                }
+            ],
         }
+        if system_prompt:
+            prompt["system"] = system_prompt
     
-    def _store_combined_results(self, results: Dict[str, Any], event_id: str) -> None:
-        """Store combined results in S3."""
-        try:
-            key = f"events/combined/{event_id}.json"
-            
-            self.s3_client.put_object(
-                Bucket=self.events_bucket,
-                Key=key,
-                Body=json.dumps(results, indent=2),
-                ContentType='application/json'
-            )
-            
-            logger.info(f"Stored combined results: s3://{self.events_bucket}/{key}")
-            
-        except Exception as e:
-            logger.error(f"Error storing combined results: {str(e)}")
+    return prompt
 
-def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
-    """
-    Main Lambda handler for agent invoke processing and Bedrock analysis.
-    
-    Args:
-        event: Lambda event containing event_id
-        context: Lambda context
-        
-    Returns:
-        Dictionary containing combined analysis and Bedrock results
-    """
+def invoke_bedrock_model(prompt, model_id: str = MODEL_ID, max_tokens: int = 1000, temperature: float = 0.5):
+    """Invoke Bedrock model with given prompt and return the response text"""
     try:
-        logger.info(f"Received event: {json.dumps(event, default=str)}")
         
-        # Initialize handler
-        agent_handler = AgentInvokeHandler()
+        response = bedrock_runtime.invoke_model(
+            modelId=model_id,
+            body=json.dumps(prompt),
+            contentType="application/json",
+            accept="application/json",
+        )
         
-        # Process agent input
-        results = agent_handler.process_agent_input(event)
+        response_body = json.loads(response.get("body").read())
+        print(f"Bedrock response: {response_body}")
         
-        # Return results
-        return {
-            "statusCode": 200,
-            "body": json.dumps({
-                "message": "Agent invoke processing completed successfully",
-                "results": results
-            })
-        }
+        if "content" in response_body and len(response_body["content"]) > 0:
+            analysis = response_body["content"][0]["text"]
+        else:
+            analysis = response_body.get("text", str(response_body))
+        
+        print(f"Bedrock analysis: {analysis}")
+        
+        return analysis
         
     except Exception as e:
-        logger.error(f"Error in handler: {str(e)}")
-        return {
-            "statusCode": 500,
-            "body": json.dumps({
-                "error": "Internal server error",
-                "message": str(e)
-            })
+        print(f"Error invoking Bedrock: {e}")
+        raise
+
+def get_historical_events(hours_back: int = 24) -> List[Dict[str, Any]]:
+    """Retrieve historical events from the knowledge base"""
+    try:
+        # Get events from the last N hours
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours_back)
+        
+        response = s3.list_objects_v2(
+            Bucket=BUCKET, 
+            Prefix=KNOWLEDGE_BASE_PREFIX
+        )
+        
+        if "Contents" not in response:
+            return []
+        
+        events = []
+        for obj in response["Contents"]:
+            if obj["Key"].endswith("_analysis.json"):
+                try:
+                    # Get the object
+                    file_response = s3.get_object(Bucket=BUCKET, Key=obj["Key"])
+                    event_data = json.loads(file_response["Body"].read())
+                    
+                    # Parse timestamp and filter by time
+                    if "timestamp" in event_data:
+                        event_time = datetime.strptime(event_data["timestamp"], "%Y%m%d-%H%M%S")
+                        if event_time.replace(tzinfo=timezone.utc) >= cutoff_time:
+                            events.append(event_data)
+                except Exception as e:
+                    print(f"Error reading event {obj['Key']}: {e}")
+                    continue
+        
+        # Sort by timestamp (most recent first)
+        events.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+        
+        return events[:10]  # Return last 10 events
+        
+    except Exception as e:
+        print(f"Error retrieving historical events: {e}")
+        return []
+
+def format_context_for_prompt(events: List[Dict[str, Any]]) -> str:
+    """Format historical events into context for the prompt"""
+    if not events:
+        return "No previous events found in the knowledge base."
+    
+    context = "Previous events from knowledge base:\n"
+    for i, event in enumerate(events, 1):
+        context += f"{i}. Time: {event.get('timestamp', 'Unknown')}\n"
+        context += f"   Alert Level: {event.get('alert_level', 'Unknown')}\n"
+        context += f"   Reason: {event.get('reason', 'Unknown')}\n"
+        context += f"   Brief: {event.get('brief_description', 'Unknown')}\n"
+        context += "\n"
+    
+    return context
+
+def save_to_knowledge_base(analysis_result: Dict[str, Any], image_key: str):
+    """Save analysis result to knowledge base"""
+    try:
+        # Create knowledge base entry
+        kb_entry = {
+            "timestamp": analysis_result.get("timestamp"),
+            "image_key": image_key,
+            "alert_level": analysis_result.get("alert_level", 0),
+            "reason": analysis_result.get("reason", ""),
+            "log_file_name": analysis_result.get("log_file_name", ""),
+            "brief_description": analysis_result.get("brief_description", ""),
+            "full_description": analysis_result.get("full_description", ""),
+            "model_used": analysis_result.get("model_used", MODEL_ID),
+            "knowledge_base_id": str(uuid.uuid4()),
+            "created_at": datetime.now(timezone.utc).isoformat()
         }
+        
+        # Save to knowledge base
+        kb_key = f"{KNOWLEDGE_BASE_PREFIX}{analysis_result.get('timestamp', 'unknown')}_{analysis_result.get('log_file_name', 'event')}.json"
+        
+        s3.put_object(
+            Bucket=BUCKET,
+            Key=kb_key,
+            Body=json.dumps(kb_entry, indent=2),
+            ContentType="application/json"
+        )
+        
+        print(f"Saved to knowledge base: s3://{BUCKET}/{kb_key}")
+        
+    except Exception as e:
+        print(f"Error saving to knowledge base: {e}")
+
+def lambda_handler(event, context):
+    # 1️⃣ List objects in S3
+    response = s3.list_objects_v2(Bucket=BUCKET, Prefix=PREFIX)
+    if "Contents" not in response:
+        return {"statusCode": 404, "body": "No files found."}
+
+    jpg_files = [obj for obj in response["Contents"] if obj["Key"].lower().endswith('.jpg')]
+    if not jpg_files:
+        return {"statusCode": 404, "body": "No JPG images found."}
+
+    # 2️⃣ Pick the latest image
+    latest_file = max(jpg_files, key=lambda x: x["LastModified"])
+    key = latest_file["Key"]
+    print(f"Analyzing frame: s3://{BUCKET}/{key}")
+
+    # 3️⃣ Get historical context from knowledge base
+    print("Retrieving historical events...")
+    historical_events = get_historical_events(hours_back=24)  # Last 24 hours
+    context_text = format_context_for_prompt(historical_events)
+    print(f"Found {len(historical_events)} historical events")
+
+    # 4️⃣ Download image data directly
+    try:
+        response = s3.get_object(Bucket=BUCKET, Key=key)
+        image_data = response["Body"].read()
+        content_type = response.get("ContentType", "image/jpeg")
+        print(f"Downloaded image: {len(image_data)} bytes, content type: {content_type}")
+    except Exception as e:
+        return {"statusCode": 500, "body": f"Failed to download image: {e}"}
+
+    # 5️⃣ Create enhanced analysis prompt with knowledge base context
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    monitoring_instruction = "Monitor for falls, medical emergencies, or unusual behavior in person's living space"
+    
+    agent_prompt = f"""
+    Analyze the provided image. {monitoring_instruction}
+    Use the timestamp '{timestamp}' for log file name.
+    
+    CONTEXT FROM PREVIOUS EVENTS:
+    {context_text}
+    
+    Use this historical context to help determine if the current situation is normal, concerning, or requires immediate attention. Consider patterns, frequency, and severity of similar past events.
+    
+    If no concerning activity is detected, set 'alert_level':0 and all other fields to 'no concerning activity detected' and explain why
+    Please return your valid formatted JSON (confirm no double quotes appear in description text):
+    """
+
+    # 6️⃣ Create multimodal prompt
+    prompt = create_multimodal_prompt(
+        image_data=image_data,
+        text=agent_prompt,
+        content_type=content_type,
+        system_prompt=SYSTEM_PROMPT,
+        temperature=0.5,
+        model_id=MODEL_ID
+    )
+
+    # 7️⃣ Invoke Bedrock with knowledge base context
+    try:
+        analysis_result = invoke_bedrock_model(
+            prompt=prompt, 
+            model_id=MODEL_ID
+        )
+        
+        # Parse JSON from response
+        final_text = analysis_result.strip()
+        if final_text.startswith("```json"):
+            final_text = final_text.split("```json")[1].split("```")[0].strip()
+        
+        try:
+            report = json.loads(final_text)
+            # Add metadata
+            report["timestamp"] = timestamp
+            report["image_key"] = key
+            report["model_used"] = MODEL_ID
+            report["historical_context_used"] = len(historical_events)
+            
+        except json.JSONDecodeError as e:
+            print(f"Failed to parse Bedrock response as JSON: {e}")
+            report = {
+                "timestamp": timestamp,
+                "image_key": key,
+                "alert_level": 0,
+                "reason": "JSON parsing failed",
+                "log_file_name": f"{timestamp}_parsing_error.json",
+                "brief_description": "Failed to parse AI response",
+                "full_description": f"Raw response: {final_text}",
+                "model_used": MODEL_ID,
+                "historical_context_used": len(historical_events)
+            }
+
+    except Exception as e:
+        print(f"Bedrock invocation failed: {e}")
+        report = {
+            "timestamp": timestamp,
+            "image_key": key,
+            "alert_level": 0,
+            "reason": "Bedrock invocation failed",
+            "log_file_name": f"{timestamp}_invocation_error.json",
+            "brief_description": "AI analysis failed",
+            "full_description": f"Error: {str(e)}",
+            "model_used": MODEL_ID,
+            "historical_context_used": len(historical_events)
+        }
+
+    # 8️⃣ Save analysis to regular location
+    output_key = key.replace(".jpg", "_analysis.json")
+    try:
+        s3.put_object(
+            Bucket=BUCKET,
+            Key=output_key,
+            Body=json.dumps(report, indent=2),
+            ContentType="application/json"
+        )
+        print(f"Saved analysis to s3://{BUCKET}/{output_key}")
+    except Exception as e:
+        print(f"Failed to save to S3: {e}")
+
+    # 9️⃣ Save to knowledge base for future context
+    save_to_knowledge_base(report, key)
+
+    print("Final Analysis Report:", json.dumps(report, indent=2))
+    return {
+        "statusCode": 200,
+        "body": json.dumps(report)
+    }
