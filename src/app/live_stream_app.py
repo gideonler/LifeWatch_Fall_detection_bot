@@ -9,9 +9,8 @@ import io
 
 st.title("🎥 Webcam Capture + Lambda Upload")
 
-# AWS_REGION = "ap-southeast-2"  # 🔧 change to your region
-# LAMBDA_NAME = "video-invoke-lambda"  # 🔧 change to your Lambda name
-
+# AWS_REGION = ""  # 
+# LAMBDA_NAME = ""  # 
 # # Initialize boto3 Lambda client
 # lambda_client = boto3.client("lambda", region_name=AWS_REGION)
 
@@ -77,6 +76,7 @@ def send_image_to_lambda_url(image: Image.Image):
 
 # # --- UI ---
 st.write("Click below to start webcam capture.")
+
 if st.button("Start Capture"):
     with st.spinner("Activating webcam..."):
         frames = capture_frames(interval=3, count=4)
