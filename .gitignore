@@ -1,5 +1,5 @@
 cdk.out/**
-/testing
+/test
 .venv/**
 __pycache__/
 *.pyc

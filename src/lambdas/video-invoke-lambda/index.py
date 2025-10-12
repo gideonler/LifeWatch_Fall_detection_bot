@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import boto3
+import base64
 from typing import Dict, Any, Optional
 from datetime import datetime
 
@@ -9,432 +10,235 @@ from datetime import datetime
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
+
 class VideoInvokeHandler:
-    """Handles visual processing and Bedrock agent invocation for elderly safety monitoring.
+	"""Handles single image processing from either inline base64 bytes or S3 URI,
+	   and persists artifacts only when a human is detected."""
 
-    Supports two input modes:
-    1) video_uri: S3 URI to a video (legacy path using Rekognition Video person tracking)
-    2) image_grid_base64 or image_grid_s3_uri: a grid image of 10 frames from Streamlit
-       - We run Rekognition DetectLabels on the grid image to detect a human
-       - If a human is detected, we store the grid in S3 and invoke the Bedrock agent
-    """
-    
-    def __init__(self):
-        self.ssm_client = boto3.client('ssm')
-        self.rekognition_client = boto3.client('rekognition')
-        
-        # Get Bedrock configuration from SSM
-        self.agent_id = self._get_ssm_parameter('/fall-detection/bedrock/agent-id')
-        self.model_id = self._get_ssm_parameter('/fall-detection/bedrock/model-id')
+	def __init__(self):
+		self.rekognition_client = boto3.client("rekognition")
+		self.lambda_client = boto3.client("lambda")
+		self.s3_client = boto3.client("s3")
 
-        # commenting out knowledge base id for now
-        # self.knowledge_base_id = self._get_ssm_parameter('/fall-detection/bedrock/kb-id')
-        
-        # S3 buckets and pipeline mode
-        self.video_analysis_bucket = os.environ.get('VIDEO_ANALYSIS_BUCKET')
-        self.events_bucket = os.environ.get('EVENTS_BUCKET')
-        self.combined_pipeline = os.environ.get('COMBINED_PIPELINE', 'false').lower() == 'true'
-        
-    def _get_ssm_parameter(self, parameter_name: str) -> Optional[str]:
-        """Get parameter value from SSM Parameter Store."""
-        try:
-            response = self.ssm_client.get_parameter(Name=parameter_name)
-            return response['Parameter']['Value']
-        except Exception as e:
-            logger.warning(f"Could not retrieve parameter {parameter_name}: {str(e)}")
-            return None
-    
-    def process_video(self, event: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Route processing based on input: video or frames grid image.
+		# Environment configuration
+		self.agent_invoke_lambda_name = os.environ.get("AGENT_INVOKE_LAMBDA_NAME")
+		self.detection_bucket = os.environ.get("DETECTION_BUCKET")
 
-        Event contracts supported:
-        - { "video_uri": "s3://bucket/key.mp4", "metadata": {...} }
-        - { "image_grid_base64": "<base64>", "metadata": {...} }
-        - { "image_grid_s3_uri": "s3://bucket/key.jpg", "metadata": {...} }
-        """
-        try:
-            if event.get('image_grid_base64') or event.get('image_grid_s3_uri'):
-                return self._process_frames_grid(event)
-            
-            # Legacy path: video uri provided
-            video_uri = event.get('video_uri')
-            if not video_uri:
-                raise ValueError("video_uri or image_grid_{base64|s3_uri} is required in the event")
+	def process_image(self, event: Dict[str, Any]) -> Dict[str, Any]:
+		"""Process image (from base64 or S3) and send results to Agent Lambda if human detected."""
+		try:
+			image_uri = event.get("image_uri")
+			base64_image = event.get("image_base64")
 
-            video_analysis = self._analyze_video(video_uri)
-            event_id = event.get('event_id') or self._compute_event_id()
-            
-            bedrock_response = None  # Bedrock invocation disabled in this function
+			if not image_uri and not base64_image:
+				raise ValueError("Must provide either image_uri or image_base64")
 
-            results = {
-                "analysis": video_analysis,
-                "bedrock_analysis": bedrock_response,
-                "timestamp": datetime.utcnow().isoformat(),
-                "context_uri": video_uri,
-                "input_mode": "video",
-                "event_id": event_id
-            }
+			image_bytes: Optional[bytes] = None
+			if base64_image:
+				image_bytes = base64.b64decode(base64_image)
 
-            if self.events_bucket:
-                self._store_event_results(results, key=f"video/{event_id}.json")
-            elif self.video_analysis_bucket:
-                self._store_results(results)
+			# Analyze image with Rekognition (bytes or S3)
+			image_analysis = self._analyze_image_for_human(
+				image_uri=image_uri,
+				image_bytes=image_bytes,
+			)
 
-            return results
-            
-        except Exception as e:
-            logger.error(f"Error processing video: {str(e)}")
-            raise
-    
-    def _analyze_video(self, video_uri: str) -> Dict[str, Any]:
-        """Analyze video using Amazon Rekognition for elderly safety monitoring."""
-        try:
-            # Start video analysis job
-            job_id = self._start_video_analysis(video_uri)
-            
-            if not job_id:
-                logger.warning("Video analysis job failed to start, using mock analysis")
-                return self._get_mock_video_analysis()
-            
-            # Wait for completion and get results
-            analysis_results = self._get_video_analysis_results(job_id)
-            
-            return analysis_results
-            
-        except Exception as e:
-            logger.error(f"Error analyzing video: {str(e)}")
-            return self._get_mock_video_analysis()
-    
-    def _start_video_analysis(self, video_uri: str) -> Optional[str]:
-        """Start Amazon Rekognition video analysis job."""
-        try:
-            # Extract S3 bucket and key from URI
-            s3_uri_parts = video_uri.replace('s3://', '').split('/', 1)
-            bucket = s3_uri_parts[0]
-            key = s3_uri_parts[1]
-            
-            # Start person tracking job
-            response = self.rekognition_client.start_person_tracking(
-                Video={
-                    'S3Object': {
-                        'Bucket': bucket,
-                        'Name': key
-                    }
-                },
-                NotificationChannel={
-                    'SNSTopicArn': os.environ.get('REKOGNITION_SNS_TOPIC', ''),
-                    'RoleArn': os.environ.get('REKOGNITION_ROLE_ARN', '')
-                }
-            )
-            
-            job_id = response['JobId']
-            logger.info(f"Started video analysis job: {job_id}")
-            return job_id
-            
-        except Exception as e:
-            logger.error(f"Error starting video analysis: {str(e)}")
-            return None
-    
-    def _get_video_analysis_results(self, job_id: str) -> Dict[str, Any]:
-        """Get results from video analysis job."""
-        try:
-            import time
-            
-            # Wait for job completion
-            max_wait_time = 300  # 5 minutes
-            start_time = time.time()
-            
-            while time.time() - start_time < max_wait_time:
-                response = self.rekognition_client.get_person_tracking(JobId=job_id)
-                
-                status = response['JobStatus']
-                if status in ['SUCCEEDED', 'FAILED']:
-                    break
-                    
-                time.sleep(10)  # Wait 10 seconds before checking again
-            
-            if status == 'SUCCEEDED':
-                return self._parse_video_analysis_results(response)
-            else:
-                logger.error(f"Video analysis job failed: {response.get('StatusMessage', 'Unknown error')}")
-                return self._get_mock_video_analysis()
-                
-        except Exception as e:
-            logger.error(f"Error getting video analysis results: {str(e)}")
-            return self._get_mock_video_analysis()
-    
-    def _parse_video_analysis_results(self, response: Dict[str, Any]) -> Dict[str, Any]:
-        """Parse video analysis results from Rekognition."""
-        try:
-            persons = response.get('Persons', [])
-            
-            # Analyze person movements and positions
-            analysis = {
-                "person_count": len(persons),
-                "movement_analysis": [],
-                "fall_indicators": [],
-                "safety_score": 0,
-                "timestamp": datetime.utcnow().isoformat()
-            }
-            
-            for person in persons:
-                person_data = person.get('Person', {})
-                if person_data:
-                    # Analyze bounding box and movement
-                    bounding_box = person_data.get('BoundingBox', {})
-                    movement = self._analyze_person_movement(person)
-                    
-                    analysis["movement_analysis"].append({
-                        "person_id": person_data.get('Index', 0),
-                        "bounding_box": bounding_box,
-                        "movement": movement,
-                        "confidence": person_data.get('Confidence', 0)
-                    })
-                    
-                    # Check for fall indicators
-                    fall_indicators = self._check_fall_indicators(bounding_box, movement)
-                    if fall_indicators:
-                        analysis["fall_indicators"].extend(fall_indicators)
-            
-            # Calculate safety score
-            analysis["safety_score"] = self._calculate_safety_score(analysis)
-            
-            return analysis
-            
-        except Exception as e:
-            logger.error(f"Error parsing video analysis results: {str(e)}")
-            return self._get_mock_video_analysis()
-    
-    def _analyze_person_movement(self, person: Dict[str, Any]) -> Dict[str, Any]:
-        """Analyze person movement patterns."""
-        # This is a simplified implementation
-        # In a real scenario, you'd analyze the track over time
-        return {
-            "movement_type": "walking",  # walking, standing, sitting, lying
-            "speed": "normal",
-            "direction": "forward",
-            "stability": "stable"
-        }
-    
-    def _check_fall_indicators(self, bounding_box: Dict[str, Any], movement: Dict[str, Any]) -> list:
-        """Check for fall indicators in person data."""
-        indicators = []
-        
-        # Check bounding box position (person lying down)
-        if bounding_box.get('Height', 0) < 0.3:  # Person appears horizontal
-            indicators.append("person_horizontal_position")
-        
-        # Check movement patterns
-        if movement.get('movement_type') == 'lying':
-            indicators.append("person_lying_down")
-        
-        if movement.get('stability') == 'unstable':
-            indicators.append("unstable_movement")
-        
-        return indicators
-    
-    def _calculate_safety_score(self, analysis: Dict[str, Any]) -> int:
-        """Calculate safety score based on analysis (0-100, higher is safer)."""
-        score = 100
-        
-        # Deduct points for fall indicators
-        score -= len(analysis.get('fall_indicators', [])) * 20
-        
-        # Deduct points for unusual movement
-        for movement in analysis.get('movement_analysis', []):
-            if movement.get('movement', {}).get('stability') == 'unstable':
-                score -= 10
-        
-        return max(0, min(100, score))
-    
-    def _get_mock_video_analysis(self) -> Dict[str, Any]:
-        """Get mock video analysis for testing."""
-        return {
-            "person_count": 1,
-            "movement_analysis": [{
-                "person_id": 0,
-                "bounding_box": {"Width": 0.2, "Height": 0.6, "Left": 0.4, "Top": 0.2},
-                "movement": {
-                    "movement_type": "walking",
-                    "speed": "normal",
-                    "direction": "forward",
-                    "stability": "stable"
-                },
-                "confidence": 95.5
-            }],
-            "fall_indicators": [],
-            "safety_score": 85,
-            "timestamp": datetime.utcnow().isoformat(),
-            "source": "mock_analysis"
-        }
-    
-    # Bedrock invocation intentionally omitted in this lambda
-    
-    def _store_results(self, results: Dict[str, Any]) -> None:
-        """Store results in S3 bucket."""
-        try:
-            s3_client = boto3.client('s3')
-            key = f"video-analysis/{datetime.utcnow().strftime('%Y/%m/%d')}/analysis-{datetime.utcnow().strftime('%H%M%S')}.json"
-            
-            s3_client.put_object(
-                Bucket=self.video_analysis_bucket,
-                Key=key,
-                Body=json.dumps(results, indent=2),
-                ContentType='application/json'
-            )
-            
-            logger.info(f"Stored video analysis results in S3: s3://{self.video_analysis_bucket}/{key}")
-            
-        except Exception as e:
-            logger.error(f"Error storing results in S3: {str(e)}")
+			if not image_analysis.get("human_detected"):
+				logger.info("No human detected, discarding frame.")
+				return {
+					"status": "discarded",
+					"reason": "no_human_detected",
+					"image_analysis": image_analysis,
+					"timestamp": datetime.utcnow().isoformat(),
+				}
 
-    # --------- New image-grid pipeline ---------
-    def _process_frames_grid(self, event: Dict[str, Any]) -> Dict[str, Any]:
-        """Process a grid image of frames from Streamlit.
+			# Human detected → analyze for fall patterns
+			fall_analysis = self._analyze_fall_patterns(image_analysis)
 
-        If a person is detected by Rekognition, persist the grid to S3 and invoke the Bedrock agent.
-        """
-        image_bytes: Optional[bytes] = None
-        grid_s3_uri: Optional[str] = event.get('image_grid_s3_uri')
+			# Persist logs + image only when human detected
+			storage_info = self._save_detection_artifacts(
+				image_bytes=image_bytes,
+				image_uri=image_uri,
+				image_analysis=image_analysis,
+				fall_analysis=fall_analysis,
+				original_event=event,
+			)
 
-        if event.get('image_grid_base64'):
-            import base64
-            image_bytes = base64.b64decode(event['image_grid_base64'])
-        elif grid_s3_uri:
-            # We will not download; Rekognition can read from S3 directly
-            pass
-        else:
-            raise ValueError("image_grid_base64 or image_grid_s3_uri must be provided")
+			# Forward results to Agent Lambda (optional)
+			agent_response = self._send_to_agent_invoke(
+				image_analysis, fall_analysis, event, storage_info
+			)
 
-        # Detect person using Rekognition DetectLabels
-        person_detected, labels = self._detect_person_in_image(image_bytes=image_bytes, s3_uri=grid_s3_uri)
+			return {
+				"status": "processed",
+				"image_analysis": image_analysis,
+				"fall_analysis": fall_analysis,
+				"storage_info": storage_info,
+				"agent_response": agent_response,
+				"timestamp": datetime.utcnow().isoformat(),
+				"image_uri": image_analysis.get("image_uri"),
+			}
 
-        analysis = {
-            "person_count": 1 if person_detected else 0,
-            "movement_analysis": [],
-            "fall_indicators": [],
-            "safety_score": 80 if person_detected else 90,
-            "labels": labels,
-            "timestamp": datetime.utcnow().isoformat()
-        }
+		except Exception as e:
+			logger.error(f"Error processing image: {str(e)}", exc_info=True)
+			raise
 
-        if not person_detected:
-            return {
-                "analysis": analysis,
-                "bedrock_analysis": None if self.combined_pipeline else self._get_mock_bedrock_response(analysis),
-                "context_uri": grid_s3_uri or "inline-bytes",
-                "input_mode": "image_grid",
-                "note": "No person detected; skipping Bedrock invocation"
-            }
+	def _analyze_image_for_human(
+		self,
+		image_uri: Optional[str] = None,
+		image_bytes: Optional[bytes] = None,
+	) -> Dict[str, Any]:
+		"""Run Rekognition analysis for labels, faces, and text using Bytes or S3."""
+		if image_bytes is None and not image_uri:
+			raise ValueError("Provide image_bytes or image_uri")
 
-        # Ensure image grid is stored to S3 for traceability
-        if not grid_s3_uri:
-            grid_s3_uri = self._upload_bytes_to_s3(image_bytes)
+		if image_bytes is not None:
+			image_param = {"Bytes": image_bytes}
+			resolved_uri = image_uri or "bytes://inline"
+		else:
+			bucket, key = image_uri.replace("s3://", "").split("/", 1)
+			image_param = {"S3Object": {"Bucket": bucket, "Name": key}}
+			resolved_uri = image_uri
 
-        bedrock_response = None  # Bedrock invocation disabled in this function
+		labels = self.rekognition_client.detect_labels(
+			Image=image_param, MaxLabels=20, MinConfidence=70
+		)
+		faces = self.rekognition_client.detect_faces(Image=image_param)
+		text = self.rekognition_client.detect_text(Image=image_param)
 
-        results = {
-            "analysis": analysis,
-            "bedrock_analysis": bedrock_response,
-            "timestamp": datetime.utcnow().isoformat(),
-            "context_uri": grid_s3_uri,
-            "input_mode": "image_grid",
-            "event_id": event.get('event_id') or self._compute_event_id()
-        }
+		human_detected = any(
+			label.get("Name", "").lower() in ["person", "people", "human"]
+			and label.get("Confidence", 0) > 80
+			for label in labels.get("Labels", [])
+		) or any(face.get("Confidence", 0) > 80 for face in faces.get("FaceDetails", []))
 
-        if self.events_bucket:
-            self._store_event_results(results, key=f"video/{results['event_id']}.json")
-        elif self.video_analysis_bucket:
-            self._store_results(results)
+		return {
+			"image_uri": resolved_uri,
+			"labels": labels.get("Labels", []),
+			"faces": faces.get("FaceDetails", []),
+			"text": text.get("TextDetections", []),
+			"person_count": len(faces.get("FaceDetails", [])),
+			"human_detected": human_detected,
+			"timestamp": datetime.utcnow().isoformat(),
+		}
 
-        return results
+	def _analyze_fall_patterns(self, image_analysis: Dict[str, Any]) -> Dict[str, Any]:
+		"""Simplified fall analysis logic."""
+		fall_detected = image_analysis.get("person_count", 0) > 0
+		return {
+			"fall_detected": fall_detected,
+			"fall_confidence": 75 if fall_detected else 0,
+			"safety_score": 100 if not fall_detected else 70,
+			"timestamp": datetime.utcnow().isoformat(),
+		}
 
-    def _detect_person_in_image(self, *, image_bytes: Optional[bytes] = None, s3_uri: Optional[str] = None):
-        """Use Rekognition DetectLabels to check for a 'Person' label in an image."""
-        try:
-            params: Dict[str, Any] = {"MaxLabels": 10, "MinConfidence": 70}
-            if image_bytes is not None:
-                params["Image"] = {"Bytes": image_bytes}
-            elif s3_uri:
-                bucket, key = s3_uri.replace('s3://', '').split('/', 1)
-                params["Image"] = {"S3Object": {"Bucket": bucket, "Name": key}}
-            else:
-                raise ValueError("Either image_bytes or s3_uri must be provided")
+	def _save_detection_artifacts(
+		self,
+		image_bytes: Optional[bytes],
+		image_uri: Optional[str],
+		image_analysis: Dict[str, Any],
+		fall_analysis: Dict[str, Any],
+		original_event: Dict[str, Any],
+	) -> Dict[str, Any]:
+		"""Save analysis JSON and the detected image into detected-images/datestr=YYYYMMDD/."""
+		if not self.detection_bucket:
+			return {"error": "DETECTION_BUCKET not set"}
 
-            resp = self.rekognition_client.detect_labels(**params)
-            labels = [{"Name": l["Name"], "Confidence": l["Confidence"]} for l in resp.get("Labels", [])]
-            person_detected = any(l["Name"].lower() == "person" and l["Confidence"] >= 70 for l in resp.get("Labels", []))
-            return person_detected, labels
-        except Exception as e:
-            logger.error(f"Error detecting labels: {str(e)}")
-            # Fail open but indicate no person to avoid false alarms
-            return False, []
+		date_str = datetime.utcnow().strftime("%Y%m%d")
+		time_str = datetime.utcnow().strftime("%H%M%S")
+		base_folder = f"detected-images/datestr={date_str}"
 
-    def _upload_bytes_to_s3(self, image_bytes: bytes) -> str:
-        """Upload image bytes to the analysis bucket and return the S3 URI."""
-        if not self.video_analysis_bucket:
-            raise ValueError("VIDEO_ANALYSIS_BUCKET is not configured")
-        s3_client = boto3.client('s3')
-        key = f"frames-grid/{datetime.utcnow().strftime('%Y/%m/%d')}/grid-{datetime.utcnow().strftime('%H%M%S')}.jpg"
-        s3_client.put_object(Bucket=self.video_analysis_bucket, Key=key, Body=image_bytes, ContentType='image/jpeg')
-        return f"s3://{self.video_analysis_bucket}/{key}"
+		# 1) Write analysis log
+		logs_key = f"{base_folder}/{time_str}_analysis.json"
+		log_data = {
+			"image_analysis": image_analysis,
+			"fall_analysis": fall_analysis,
+			"original_event": original_event,
+			"timestamp": datetime.utcnow().isoformat(),
+		}
+		self.s3_client.put_object(
+			Bucket=self.detection_bucket,
+			Key=logs_key,
+			Body=json.dumps(log_data, indent=2),
+			ContentType="application/json",
+		)
 
-    def _compute_event_id(self) -> str:
-        import math
-        now = datetime.utcnow()
-        epoch = int(now.timestamp())
-        window = (epoch // 30) * 30
-        return datetime.utcfromtimestamp(window).strftime('%Y%m%dT%H%M%SZ')
+		# 2) Save/copy the image
+		if image_bytes is not None:
+			image_key = f"{base_folder}/{time_str}.jpg"
+			self.s3_client.put_object(
+				Bucket=self.detection_bucket,
+				Key=image_key,
+				Body=image_bytes,
+				ContentType="image/jpeg",
+			)
+		else:
+			# image_uri is like s3://bucket/path/to/image.jpg
+			src_bucket, src_key = image_uri.replace("s3://", "").split("/", 1)
+			filename = os.path.basename(src_key) or f"{time_str}.jpg"
+			image_key = f"{base_folder}/{filename}"
+			if not (src_bucket == self.detection_bucket and src_key == image_key):
+				self.s3_client.copy_object(
+					Bucket=self.detection_bucket,
+					Key=image_key,
+					CopySource={"Bucket": src_bucket, "Key": src_key},
+					MetadataDirective="REPLACE",
+					ContentType="image/jpeg",
+				)
 
-    def _store_event_results(self, results: Dict[str, Any], *, key: str) -> None:
-        try:
-            s3_client = boto3.client('s3')
-            s3_client.put_object(
-                Bucket=self.events_bucket,
-                Key=f"events/{key}",
-                Body=json.dumps(results, indent=2),
-                ContentType='application/json'
-            )
-            logger.info(f"Stored event results: s3://{self.events_bucket}/events/{key}")
-        except Exception as e:
-            logger.error(f"Error storing event results in S3: {str(e)}")
+		return {
+			"stored_logs_uri": f"s3://{self.detection_bucket}/{logs_key}",
+			"stored_image_uri": f"s3://{self.detection_bucket}/{image_key}",
+			"detection_bucket": self.detection_bucket,
+		}
+
+	def _send_to_agent_invoke(
+		self,
+		image_analysis: Dict[str, Any],
+		fall_analysis: Dict[str, Any],
+		event: Dict[str, Any],
+		storage_info: Dict[str, Any],
+	) -> Dict[str, Any]:
+		"""Invoke Agent Lambda for further reasoning."""
+		if not self.agent_invoke_lambda_name:
+			return {"message": "Agent lambda not configured"}
+
+		payload = {
+			"source": "video-invoke",
+			"image_analysis": image_analysis,
+			"fall_analysis": fall_analysis,
+			"storage_info": storage_info,
+			"timestamp": datetime.utcnow().isoformat(),
+		}
+
+		response = self.lambda_client.invoke(
+			FunctionName=self.agent_invoke_lambda_name,
+			InvocationType="RequestResponse",
+			Payload=json.dumps(payload).encode("utf-8"),
+		)
+
+		return json.loads(response["Payload"].read())
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
-    """
-    Main Lambda handler for video processing and Bedrock analysis.
-    
-    Args:
-        event: Lambda event containing video file information
-        context: Lambda context
-        
-    Returns:
-        Dictionary containing video analysis and Bedrock results
-    """
-    try:
-        logger.info(f"Received event: {json.dumps(event, default=str)}")
-        
-        # Initialize handler
-        video_handler = VideoInvokeHandler()
-        
-        # Process video
-        results = video_handler.process_video(event)
-        
-        # Return results
-        return {
-            "statusCode": 200,
-            "body": json.dumps({
-                "message": "Video processing completed successfully",
-                "results": results
-            })
-        }
-        
-    except Exception as e:
-        logger.error(f"Error in handler: {str(e)}")
-        return {
-            "statusCode": 500,
-            "body": json.dumps({
-                "error": "Internal server error",
-                "message": str(e)
-            })
-        }
+	"""Lambda entrypoint with Function URL/APIGW v2 body normalization."""
+	try:
+		# Normalize Function URL / HTTP API v2 envelopes
+		if isinstance(event, dict) and "body" in event:
+			body = event["body"]
+			if event.get("isBase64Encoded"):
+				body = base64.b64decode(body).decode("utf-8")
+			if isinstance(body, str):
+				try:
+					event = json.loads(body)
+				except Exception:
+					event = {"raw_body": body}
+			elif isinstance(body, dict):
+				event = body
+
+		logger.info(f"Received normalized event: {json.dumps(event)[:500]}")
+		video_handler = VideoInvokeHandler()
+		result = video_handler.process_image(event)
+		return {"statusCode": 200, "body": json.dumps(result)}
+	except Exception as e:
+		logger.error(f"Error in handler: {str(e)}", exc_info=True)
+		return {"statusCode": 500, "body": json.dumps({"error": str(e)})}

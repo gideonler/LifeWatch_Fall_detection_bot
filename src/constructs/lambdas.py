@@ -31,22 +31,47 @@ class LambdasConstruct(Construct):
 		self,
 		scope: Construct,
 		construct_id: str,
+  	buckets,
 		*,
 		environment: Optional[Dict[str, str]] = None,
 	) -> None:
 		super().__init__(scope, construct_id)
 
 		common_env = environment or {}
-
+    
 		self.transcribe_invoke = self._create_python_lambda(
 			"TranscribeInvoke",
 			LAMBDA_SRC_ROOT / "transcribe-invoke-lambda",
-			environment=common_env,
+			environment={
+        "AUDIO_BUCKET": buckets.audio_bucket.bucket_name,
+        "TRANSCRIBE_ROLE_ARN": self.transcribe_role.role_arn,
+      },
 		)
+		# grant permission to call transcribe
 
 		self.video_invoke = self._create_python_lambda(
 			"VideoInvoke",
 			LAMBDA_SRC_ROOT / "video-invoke-lambda",
+			environment={
+				**common_env,
+				"AGENT_INVOKE_LAMBDA_NAME": self.agent_invoke.function_name,
+				"IMAGE_BUCKET": buckets.images_bucket.bucket_name,
+			},
+			timeout=Duration.seconds(60),
+			memory_mb=1024,
+		)
+		self.video_invoke.add_to_role_policy(iam.PolicyStatement(
+			actions=[
+				"rekognition:DetectLabels",
+				"rekognition:DetectFaces",
+				"rekognition:DetectText"
+			],
+			resources=["*"]
+		))
+  
+		self.agent_invoke = self._create_python_lambda(
+			"AgentInvoke",
+			LAMBDA_SRC_ROOT / "agent-invoke-lambda",
 			environment=common_env,
 			timeout=Duration.seconds(60),
 			memory_mb=1024,
@@ -67,7 +92,7 @@ class LambdasConstruct(Construct):
 		)
 
 	def grant_s3_access(self, *, read_buckets: list, write_buckets: list) -> None:
-		for fn in [self.transcribe_invoke, self.video_invoke, self.agent_executor, self.action]:
+		for fn in [self.transcribe_invoke, self.video_invoke, self.agent_invoke, self.agent_executor, self.action]:
 			for b in read_buckets:
 				b.grant_read(fn)
 			for b in write_buckets:
@@ -83,7 +108,7 @@ class LambdasConstruct(Construct):
 				resources=["*"],
 			)
 		])
-		for fn in [self.agent_executor, self.transcribe_invoke, self.video_invoke]:
+		for fn in [self.agent_invoke]:
 			fn.role.add_managed_policy(policy)
 
 	def allow_polly_synthesize(self) -> None:

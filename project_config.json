@@ -9,7 +9,7 @@
     "assets_folder_name": "assets"
   },
   "names": {
-    "stack_name": "elderly-home-monitoring-stack",
+    "stack_name": "elderly-home-monitoring",
     "bedrock_agent_name": "ElderlyHomeMonitoringBedrockAgent",
     "bedrock_agent_alias": "Home_Monitoring_Agent"
   },
