@@ -1,106 +1,201 @@
 # Agent Invoke Lambda
 
-This Lambda function combines outputs from transcribe-invoke-lambda and video-invoke-lambda and invokes the Bedrock agent for comprehensive elderly safety analysis.
+## Overview
 
-## Functionality
+The Agent Invoke Lambda is a critical component of the fall detection system that uses AWS Bedrock's Claude 3.5 Sonnet model to analyze camera images for potential falls, medical emergencies, and other safety concerns in elderly care environments.
 
-### Input Processing
-- **Event ID Based**: Processes data for a specific event_id (30-second window)
-- **Multi-Modal Analysis**: Combines audio transcription and video analysis
-- **Data Loading**: Reads from S3 events bucket for transcribe and video results
+## Purpose
 
-### Bedrock Integration
-- **Agent Invocation**: Calls Bedrock agents with combined analysis
-- **Comprehensive Input**: Provides both audio and video context to Bedrock
-- **Priority Assessment**: Determines overall safety priority based on combined indicators
+This Lambda function:
+- Processes the latest camera image from S3 storage
+- Analyzes the image using AI vision capabilities
+- Determines alert severity levels based on detected activities
+- Maintains a knowledge base of historical events for context-aware analysis
+- Triggers appropriate alerts based on the analysis results
 
-### Storage
-- **S3 Integration**: Stores combined results in events bucket
-- **Event Tracking**: Maintains traceability with event_id based storage
+## Features
 
-## Input Event Format
+### 🧠 AI-Powered Analysis
+- Uses Claude 3.5 Sonnet for multimodal image and text analysis
+- Specialized prompt engineering for elderly care monitoring
+- Context-aware decision making using historical events
 
+### 📊 Alert Classification
+- **Level 0**: No issues detected
+- **Level 1**: Possible issue requiring attention (soft alert)
+- **Level 2**: Issue requiring immediate action (high alert)
+
+### 🗄️ Knowledge Base Integration
+- Maintains historical event database in S3
+- Uses past events for improved decision making
+- Automatic context retrieval from last 24 hours
+
+### 🔄 Automated Workflow
+- Processes latest image from designated S3 prefix
+- Generates timestamped analysis reports
+- Saves results to both analysis and knowledge base locations
+
+## Architecture
+
+```
+S3 Bucket (Images) → Agent Invoke Lambda → AWS Bedrock (Claude 3.5) → Analysis Results
+                        ↓
+                   Knowledge Base (S3)
+                        ↓
+                   Historical Context
+```
+
+## Configuration
+
+### Environment Variables
+- `BUCKET`: S3 bucket name for image storage (`elderly-home-monitoring-images`)
+- `PREFIX`: S3 prefix for detected images (`detected-images/datestr=20251006/`)
+- `KNOWLEDGE_BASE_PREFIX`: S3 prefix for knowledge base (`knowledge-base/`)
+- `MODEL_ID`: Bedrock model identifier (`anthropic.claude-3-5-sonnet-20240620-v1:0`)
+
+### AWS Services Used
+- **AWS Bedrock**: AI model inference
+- **Amazon S3**: Image storage and knowledge base
+- **AWS Lambda**: Serverless compute
+
+## Input/Output
+
+### Input
+The Lambda expects to be triggered by events (typically from S3 or scheduled invocations) and will automatically:
+1. List objects in the configured S3 prefix
+2. Find the latest JPG image
+3. Download and analyze the image
+
+### Output
+Returns a JSON response with the following structure:
 ```json
 {
-  "event_id": "20240101T120000Z",
-  "metadata": {
-    "source": "scheduler",
-    "timestamp": "2024-01-01T12:00:00Z"
-  }
+  "alert_level": 0,
+  "reason": "No concerning activity detected",
+  "log_file_name": "20250106-143022_analysis.json",
+  "brief_description": "Elderly person sitting normally in living room",
+  "full_description": "Detailed analysis of the scene...",
+  "timestamp": "20250106-143022",
+  "image_key": "detected-images/datestr=20251006/image_001.jpg",
+  "model_used": "anthropic.claude-3-5-sonnet-20240620-v1:0",
+  "historical_context_used": 5
 }
 ```
 
-## Output Format
+## Alert Levels
 
+| Level | Description | Action Required |
+|-------|-------------|-----------------|
+| 0 | No issues detected | Continue monitoring |
+| 1 | Possible concern | Review and monitor closely |
+| 2 | Immediate attention needed | Trigger emergency protocols |
+
+## Knowledge Base
+
+The system maintains a knowledge base of historical events that helps improve decision making:
+
+### Storage Location
+- S3 bucket: `elderly-home-monitoring-images`
+- Prefix: `knowledge-base/`
+- Format: JSON files with timestamp naming
+
+### Knowledge Base Entry Structure
 ```json
 {
-  "statusCode": 200,
-  "body": {
-    "message": "Combined input processing completed successfully",
-    "results": {
-      "event_id": "20240101T120000Z",
-      "transcribe_data": {...},
-      "video_data": {...},
-      "combined_analysis": {
-        "has_audio": true,
-        "has_video": true,
-        "overall_safety_score": 85,
-        "priority_level": "MEDIUM",
-        "combined_indicators": ["audio_unusual", "person_horizontal_position"]
-      },
-      "bedrock_analysis": {
-        "content": "Analysis results...",
-        "priority": "MEDIUM",
-        "timestamp": "2024-01-01T12:00:00Z"
-      },
-      "timestamp": "2024-01-01T12:00:00Z"
-    }
-  }
+  "timestamp": "20250106-143022",
+  "image_key": "detected-images/datestr=20251006/image_001.jpg",
+  "alert_level": 0,
+  "reason": "No concerning activity detected",
+  "log_file_name": "20250106-143022_analysis.json",
+  "brief_description": "Normal activity",
+  "full_description": "Detailed description...",
+  "model_used": "anthropic.claude-3-5-sonnet-20240620-v1:0",
+  "knowledge_base_id": "uuid-string",
+  "created_at": "2025-01-06T14:30:22Z"
 }
 ```
-
-## Environment Variables
-
-- `EVENTS_BUCKET`: S3 bucket containing event data (required)
-- Bedrock configuration is retrieved from SSM Parameter Store:
-  - `/fall-detection/bedrock/agent-id`
-  - `/fall-detection/bedrock/model-id`
-
-## Dependencies
-
-- boto3: AWS SDK for Python
-- botocore: Core functionality for boto3
-
-## Analysis Features
-
-### Combined Analysis
-- **Multi-Modal Detection**: Combines audio and video indicators
-- **Priority Assessment**: Determines overall priority based on all inputs
-- **Safety Scoring**: Calculates combined safety score
-- **Indicator Tracking**: Tracks fall and emergency indicators from both modalities
-
-### Audio Analysis Integration
-- **Transcription Processing**: Analyzes audio transcription for keywords
-- **Emergency Detection**: Identifies emergency situations in audio
-- **Activity Patterns**: Detects unusual activity patterns in speech
-
-### Video Analysis Integration
-- **Person Detection**: Incorporates person count and positioning
-- **Movement Analysis**: Includes movement patterns and stability
-- **Fall Indicators**: Processes visual fall detection indicators
-- **Safety Scoring**: Integrates video-based safety assessments
 
 ## Error Handling
 
-- Graceful handling when transcribe or video data is missing
-- Comprehensive error handling for S3 operations
-- Fallback mock responses when Bedrock is not configured
-- Detailed logging for debugging and monitoring
+The Lambda includes comprehensive error handling for:
+- S3 access issues
+- Image download failures
+- Bedrock API errors
+- JSON parsing errors
+- Knowledge base access problems
 
-## Use Cases
+In case of errors, the function returns appropriate error codes and fallback analysis results.
 
-- **Combined Fall Detection**: Uses both audio and video evidence
-- **Emergency Assessment**: Evaluates emergency situations comprehensively
-- **Activity Monitoring**: Tracks normal vs. unusual activity patterns
-- **Safety Risk Assessment**: Provides holistic safety evaluation
-- **Priority Determination**: Assigns appropriate priority levels for alerts
+## Dependencies
+
+### Python Packages
+- `boto3>=1.34.0`: AWS SDK for Python
+- `botocore>=1.34.0`: Low-level AWS service access
+
+### AWS Permissions Required
+- S3 read/write access to the monitoring bucket
+- Bedrock model invocation permissions
+- CloudWatch Logs write permissions
+
+## Testing
+
+### Local Testing
+Use the provided test examples in the `test_example.py` file to test the Lambda function locally.
+
+### Test Events
+Sample test events are available in the `test-events/` directory:
+- `agent-invoke-test.json`: Basic invocation test
+- `combined-test.json`: End-to-end workflow test
+
+## Monitoring and Logging
+
+The Lambda function logs:
+- Image processing steps
+- Bedrock API calls and responses
+- Knowledge base operations
+- Error conditions and fallback scenarios
+
+Monitor CloudWatch Logs for:
+- Processing times
+- API errors
+- Knowledge base access patterns
+- Alert level distributions
+
+## Performance Considerations
+
+- **Cold Start**: ~2-3 seconds for first invocation
+- **Processing Time**: ~5-10 seconds per image analysis
+- **Memory**: Recommended 1024MB for optimal performance
+- **Timeout**: Set to 5 minutes to handle large images
+
+## Security
+
+- Uses IAM roles for AWS service access
+- No hardcoded credentials
+- Secure image processing in AWS infrastructure
+- Knowledge base data encrypted at rest in S3
+
+## Troubleshooting
+
+### Common Issues
+
+1. **No images found**: Check S3 bucket and prefix configuration
+2. **Bedrock errors**: Verify model permissions and region settings
+3. **Knowledge base errors**: Ensure S3 write permissions
+4. **JSON parsing errors**: Check Bedrock response format
+
+### Debug Steps
+
+1. Check CloudWatch Logs for detailed error messages
+2. Verify S3 bucket permissions and image availability
+3. Test Bedrock model access with simple prompts
+4. Validate knowledge base S3 permissions
+
+## Future Enhancements
+
+Potential improvements:
+- Multi-model ensemble analysis
+- Real-time alert thresholds
+- Integration with emergency services
+- Advanced pattern recognition in knowledge base
+- Custom model fine-tuning for specific care scenarios

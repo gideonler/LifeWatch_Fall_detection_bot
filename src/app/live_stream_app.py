@@ -14,7 +14,7 @@ st.title("🎥 Webcam Capture + Lambda Upload")
 # # Initialize boto3 Lambda client
 # lambda_client = boto3.client("lambda", region_name=AWS_REGION)
 
-LAMBDA_URL = "https://abrpnerwsi3dglatgaapzb5qia0ofkqw.lambda-url.ap-southeast-1.on.aws/"
+LAMBDA_URL = "https://eeiao7ouzeqrs2adwzcijtmfda0zqxoi.lambda-url.ap-southeast-1.on.aws/"
 
 def capture_frames(interval=3, count=10):
     """Capture `count` frames from webcam, every `interval` seconds."""
