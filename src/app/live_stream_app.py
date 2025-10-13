@@ -79,7 +79,7 @@ st.write("Click below to start webcam capture.")
 
 if st.button("Start Capture"):
     with st.spinner("Activating webcam..."):
-        frames = capture_frames(interval=3, count=4)
+        frames = capture_frames(interval=3, count=10)
     if frames:
         grid = combine_to_grid(frames)
         if grid:
