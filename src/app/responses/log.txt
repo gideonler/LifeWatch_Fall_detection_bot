@@ -1,0 +1,1 @@
+{"timestamp": "2025-10-19 16:15:58", "response": {"statusCode": 200, "body": "{\"message\": \"Step Function started\", \"executionArn\": \"arn:aws:states:ap-southeast-1:730335529101:execution:ElderlyFallDetectionDAG:run-20251019T081558\"}"}}
