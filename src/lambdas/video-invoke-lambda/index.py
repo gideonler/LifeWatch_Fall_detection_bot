@@ -5,6 +5,7 @@ import boto3
 import base64
 from typing import Dict, Any, Optional
 from datetime import datetime
+import requests
 
 # Configure logging
 logger = logging.getLogger()
@@ -25,7 +26,9 @@ class VideoInvokeHandler:
         self.detection_bucket = os.environ.get("DETECTION_BUCKET")
 
     def process_image(self, event: Dict[str, Any]) -> Dict[str, Any]:
-        """Process image (from base64 or S3), filter humans, and detect falls."""
+        """Process image (from base64 or S3), filter humans, detect falls,
+        and persist artifacts / invoke Agent only if fall detected."""
+
         try:
             image_uri = event.get("image_uri")
             base64_image = event.get("image_base64")
@@ -37,22 +40,36 @@ class VideoInvokeHandler:
             if base64_image:
                 image_bytes = base64.b64decode(base64_image)
 
-            # Analyze image for humans
+            # Step 1: detect humans
             image_analysis = self._analyze_image_for_human(image_uri, image_bytes)
 
+            # ✅ No humans → stop here
             if not image_analysis.get("human_detected"):
                 logger.info("No humans detected, discarding frame.")
                 return {
                     "status": "discarded",
+                    "should_continue": False,
                     "reason": "no_humans",
                     "image_analysis": image_analysis,
                     "timestamp": datetime.utcnow().isoformat(),
                 }
 
-            # Human detected → check fall
+            # Step 2: analyze for fall patterns
             fall_analysis = self._analyze_fall_patterns(image_analysis)
 
-            # Persist logs + image only when human detected
+            # ✅ Human detected but no fall → stop workflow (no save, no invoke)
+            if not fall_analysis.get("fall_detected"):
+                logger.info("No fall detected, skipping artifact save and agent invocation.")
+                return {
+                    "status": "processed",
+                    "should_continue": False,
+                    "human_detected": True,
+                    "fall_detected": False,
+                    "safety_score": fall_analysis["safety_score"],
+                    "timestamp": datetime.utcnow().isoformat(),
+                }
+
+            # Step 3: fall detected → save artifacts & invoke agent
             storage_info = self._save_detection_artifacts(
                 image_bytes=image_bytes,
                 image_uri=image_uri,
@@ -61,25 +78,27 @@ class VideoInvokeHandler:
                 original_event=event,
             )
 
-            # Optional: invoke Agent Lambda
             agent_response = self._send_to_agent_invoke(
                 image_analysis, fall_analysis, event, storage_info
             )
 
             return {
-                "status": "processed" if image_analysis["human_detected"] else "discarded",
-                "human_detected": image_analysis["human_detected"],
-                "person_count": image_analysis["person_count"],
-                "fall_detected": fall_analysis["fall_detected"],
+                "status": "processed",
+                "should_continue": True,
+                "human_detected": True,
+                "fall_detected": True,
                 "safety_score": fall_analysis["safety_score"],
                 "stored_logs_uri": storage_info.get("stored_logs_uri"),
                 "stored_image_uri": storage_info.get("stored_image_uri"),
+                "agent_response": agent_response,
                 "timestamp": datetime.utcnow().isoformat(),
             }
 
         except Exception as e:
             logger.error(f"Error processing image: {str(e)}", exc_info=True)
-            return {"status": "error", "error": str(e)}
+            return {"status": "error", "error": str(e), "should_continue": False}
+
+
 
     def _analyze_image_for_human(
         self,
@@ -127,18 +146,19 @@ class VideoInvokeHandler:
             "human_detected": human_detected,
             "timestamp": datetime.utcnow().isoformat(),
         }
-
     def _analyze_fall_patterns(self, image_analysis: Dict[str, Any]) -> Dict[str, Any]:
-        """Detect falls for humans based on bounding box heuristics."""
+        """Detect falls for humans based on bounding box heuristics and posture."""
         humans = image_analysis.get("humans", [])
 
         fall_detected = False
         for human in humans:
             bbox = human["bounding_box"]
-            # Simple heuristic: bounding box height < 0.3 → possibly lying down
+            # simple height check
             if bbox["Height"] < 0.3:
-                fall_detected = True
-                break
+                # check if person is on the floor by Y position (normalized)
+                if bbox["Top"] > 0.5:  # person low in frame → likely floor
+                    fall_detected = True
+                    break
 
         return {
             "fall_detected": fall_detected,
@@ -148,6 +168,7 @@ class VideoInvokeHandler:
             "timestamp": datetime.utcnow().isoformat(),
         }
 
+ 
     def _save_detection_artifacts(
         self,
         image_bytes: Optional[bytes],
