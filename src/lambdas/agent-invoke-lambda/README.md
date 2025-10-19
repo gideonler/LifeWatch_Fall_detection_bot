@@ -2,13 +2,10 @@
 
 ## Overview
 
-The Agent Invoke Lambda is a critical component of the fall detection system that uses AWS Bedrock's Claude 3.5 Sonnet model to analyze camera images for potential falls, medical emergencies, and other safety concerns in elderly care environments.
-
-## Purpose
+The Agent Invoke Lambda, as its name suggests, invokes AWS Bedrock to analyze camera images for potential falls, medical emergencies, and other safety concerns in elderly care environments. It is currentlh configured to use AWS Bedrock's Claude 3.5 Sonnet model.
 
 This Lambda function:
-- Processes the latest camera image from S3 storage
-- Analyzes the image using AI vision capabilities
+- Invokes bedrock with the prompt and incident image
 - Determines alert severity levels based on detected activities
 - Maintains a knowledge base of historical events for context-aware analysis
 - Triggers appropriate alerts based on the analysis results
@@ -29,11 +26,6 @@ This Lambda function:
 - Maintains historical event database in S3
 - Uses past events for improved decision making
 - Automatic context retrieval from last 24 hours
-
-### 🔄 Automated Workflow
-- Processes latest image from designated S3 prefix
-- Generates timestamped analysis reports
-- Saves results to both analysis and knowledge base locations
 
 ## Architecture
 
@@ -136,16 +128,6 @@ In case of errors, the function returns appropriate error codes and fallback ana
 - S3 read/write access to the monitoring bucket
 - Bedrock model invocation permissions
 - CloudWatch Logs write permissions
-
-## Testing
-
-### Local Testing
-Use the provided test examples in the `test_example.py` file to test the Lambda function locally.
-
-### Test Events
-Sample test events are available in the `test-events/` directory:
-- `agent-invoke-test.json`: Basic invocation test
-- `combined-test.json`: End-to-end workflow test
 
 ## Monitoring and Logging
 

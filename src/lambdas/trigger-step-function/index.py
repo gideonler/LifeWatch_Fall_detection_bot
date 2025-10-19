@@ -28,11 +28,6 @@ def handler(event, context):
         if image_base64:
             print('got image success')
 
-        # Get the image_base64 from the event
-        # image_base64 = event.get("image_base64")
-        # if not image_base64:
-        #     raise ValueError("No image_base64 found in event")
-        
         print(f"Got image_base64 with {len(image_base64)} characters")
         
         # Create the payload for the Step Function
