@@ -7,14 +7,16 @@ import io
 import base64
 import requests
 
-# 🔧 --- Configuration ---
+# ===================== CONFIG =====================
+
 LAMBDA_URL = "https://eeiao7ouzeqrs2adwzcijtmfda0zqxoi.lambda-url.ap-southeast-1.on.aws/"
-CAPTURE_INTERVAL = 3
+CAPTURE_INTERVAL = 2
 FRAME_COUNT = 10
 MAX_SIZE_KB = 150
 TIMEOUT_SECONDS = 30
 
-# ----- Video utilities -----
+# ===================== VID UTILS =====================
+
 def download_youtube_video(url: str, filename: str) -> str:
     """
     Download YouTube video as MP4 using yt-dlp.
@@ -24,7 +26,8 @@ def download_youtube_video(url: str, filename: str) -> str:
     print(f"Downloaded video: {filename}")
     return os.path.abspath(filename)
 
-# 🖼️ --- Image utilities ---
+# ===================== IMG UTILS =====================
+
 def resize_image_for_step_function(image, max_size_kb=150):
     """Resize image to fit within Step Functions 256KB limit."""
     buf = io.BytesIO()
@@ -42,7 +45,6 @@ def resize_image_for_step_function(image, max_size_kb=150):
         if len(buf.getvalue()) / 1024 <= max_size_kb:
             break
     return resized
-
 
 def extract_frames(video_path, interval=3, count=10):
     """Extract `count` frames from video every `interval` seconds."""
@@ -63,7 +65,6 @@ def extract_frames(video_path, interval=3, count=10):
     cap.release()
     return frames
 
-
 def combine_to_grid(frames, grid_size=(2, 5)):
     """Combine list of PIL Images into a grid."""
     if not frames:
@@ -78,8 +79,8 @@ def combine_to_grid(frames, grid_size=(2, 5)):
         grid.paste(img, (x, y))
     return grid
 
+# ===================== SEND TO LAMBDA =====================
 
-# ☁️ --- Send to Lambda ---
 def send_image_to_lambda(image):
     image = resize_image_for_step_function(image)
     buf = io.BytesIO()
@@ -97,7 +98,8 @@ def send_image_to_lambda(image):
         st.error(f"❌ Error sending to Lambda: {e}")
         return None
 
-# 🖥️ --- Streamlit UI ---
+# ===================== STREAMLIT =====================
+
 st.title("🎬 DEMO: Video Frame Capture + Lambda Processing")
 
 VIDEO_SAVE_PATH = 'test-data/test_video.mp4'
