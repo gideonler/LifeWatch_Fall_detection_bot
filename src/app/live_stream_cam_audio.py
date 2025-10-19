@@ -150,8 +150,37 @@ def log_lambda_response(response):
         f.write(json.dumps(entry) + "\n")
     print(f"🗂️ Logged Lambda response to {SAVE_RESPONSE_LOGS}")
 
+def check_devices(): 
+    print("\n📸 Checking available camera devices:")
+    available_cams = []
+    for index in range(3):  # test first 3 indices (0–4)
+        cap = cv2.VideoCapture(index)
+        if cap.isOpened():
+            print(f"  ✅ Camera {index} detected")
+            available_cams.append(index)
+            cap.release()
+        else:
+            print(f"  ❌ Camera {index} not found")
+
+    if available_cams:
+        print(f"\n🎥 Default camera device index: {available_cams[0]}")
+    else:
+        print("\n⚠️ No camera devices found.")
+
+    print("\n🎧 Checking available audio devices:")
+    print(sd.query_devices())
+
+    # Get default input/output info
+    default_input = sd.default.device[0]
+    print(f"\n🎙️ Default input device index: {default_input}")
+    print("🔍 Using:", sd.query_devices(default_input)["name"])
+
 def main_loop():
+    
     print("🎬 Starting live stream loop...")
+
+    # check_devices()
+
     while True:
         start_time = time.time()
         
@@ -184,7 +213,7 @@ def main_loop():
         # 3️⃣ Save locally
         grid.save(IMG_PATH)
         print(f"💾 Saved grid locally as {IMG_PATH}")
-        # TODO: get transcript from AWS transcribe 
+
         # Transcribe the just-recorded audio
         transcript_text = transcribe_audio(AUDIO_PATH)
 
