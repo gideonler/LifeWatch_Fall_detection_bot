@@ -1,11 +1,11 @@
 # Video Invoke Lambda
 
-This Lambda function processes single images containing 9-frame grids for elderly safety monitoring by analyzing image content using Amazon Rekognition and sending results to Agent Invoke Lambda for comprehensive analysis.
+This Lambda function processes single images containing multiple frame grids for elderly safety monitoring by analyzing image content using Amazon Rekognition and sending results to Agent Invoke Lambda for comprehensive analysis.
 
 ## Functionality
 
 ### Image Processing
-- **Human Detection**: Uses Amazon Rekognition to detect people in 9-frame grid images
+- **Human Detection**: Uses Amazon Rekognition to detect people in multiple frame grid images
 - **Label Detection**: Identifies objects, furniture, and environment elements
 - **Face Detection**: Detects faces for person counting and analysis
 - **Text Detection**: Extracts timestamps and other text from images
@@ -147,7 +147,7 @@ This Lambda function processes single images containing 9-frame grids for elderl
 
 ## Use Cases
 
-- **Fall Detection**: Analyze 9-frame grid images for fall scenarios
+- **Fall Detection**: Analyze multiple frame grid images for fall scenarios
 - **Activity Monitoring**: Track human presence in surveillance images
 - **Emergency Detection**: Identify emergency situations in grid images
 - **Quality Control**: Filter out images with no human activity
@@ -170,7 +170,7 @@ This Lambda function processes single images containing 9-frame grids for elderl
 ## Architecture Integration
 
 This lambda is part of the fall detection pipeline:
-1. **Input**: Single image with 9 frames from Streamlit
+1. **Input**: Single image (possibly with multiple frames) from Streamlit
 2. **Processing**: Rekognition analysis for human detection
 3. **Filtering**: Only processes if human detected
 4. **Output**: Sends results to Agent Invoke Lambda
