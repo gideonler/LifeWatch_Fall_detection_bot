@@ -1,11 +1,3 @@
-# SCRIPT Objective: 
-# Live Stream CAM Script - without streamlit interface
-# Calls function every 30s to 
-# (1) capture frame 
-# (2) create grid 
-# (3) send to lambda 
-
-## ISSUE: 500 server error when sending req to lambda 
 """
 Live Webcam Stream -> Lambda Sender
 - Captures 10 frames (3s apart)
@@ -28,7 +20,6 @@ import json
 
 # ===================== CONFIG =====================
 LAMBDA_URL = "https://eeiao7ouzeqrs2adwzcijtmfda0zqxoi.lambda-url.ap-southeast-1.on.aws/"
-# LAMBDA_URL = 'https://abrpnerwsi3dglatgaapzb5qia0ofkqw.lambda-url.ap-southeast-1.on.aws/'
 CAPTURE_INTERVAL = 3       # seconds between frames
 FRAME_COUNT = 10           # number of frames per cycle
 CYCLE_INTERVAL = 30        # seconds between each full send cycle
