@@ -1,10 +1,40 @@
 """
-Live Webcam Stream -> Lambda Sender
-- Captures 10 frames (3s apart)
-- Combines into grid
-- Saves grid locally (for testing)
-- Sends to Lambda URL (VideoInvoke) + Event_ID
-- Repeats every 30s
+Live Webcam Stream → Lambda Sender
+
+This script continuously captures frames from the webcam, combines them into a 
+grid image, and sends the image to an AWS Lambda endpoint at regular intervals. 
+
+Workflow:
+    1. Capture N frames from webcam at fixed intervals.
+    2. Combine captured frames into a single image grid.
+    3. Save the grid locally (for debugging/testing).
+    4. Send the grid image (base64-encoded) to Lambda Step function.
+    5. Log the Lambda response to a local file.
+    6. Repeat the process every cycle (e.g., every 30 seconds).
+
+Attributes:
+    LAMBDA_URL (str): Direct Lambda Function URL for POST requests.
+    CAPTURE_INTERVAL (int): Time in seconds between frame captures.
+    FRAME_COUNT (int): Number of frames to capture per cycle.
+    CYCLE_INTERVAL (int): Time in seconds between send cycles.
+    SAVE_PATH (str): Local path to save the combined image grid.
+    SAVE_RESPONSE_LOGS (str): Log file to store Lambda responses.
+
+Functions:
+    capture_frames(interval, count):
+        Captures a set of frames from the webcam at a specified interval.
+    combine_to_grid(frames, grid_size):
+        Combines a list of images into a single grid layout.
+    send_image_to_lambda(image):
+        Sends the image to Lambda via HTTP POST
+    log_lambda_response(response):
+        Logs the Lambda response locally for record keeping.
+    main_loop():
+        Runs the continuous capture–combine–send cycle until interrupted.
+
+Example:
+    Run the script directly to start the live stream process:
+        $ python live_stream_cam.py
 """
 
 import cv2
@@ -18,15 +48,18 @@ from botocore.config import Config
 import json
 
 # ===================== CONFIG =====================
+
+# step function lambda url
 LAMBDA_URL = "https://eeiao7ouzeqrs2adwzcijtmfda0zqxoi.lambda-url.ap-southeast-1.on.aws/"
 CAPTURE_INTERVAL = 3       # seconds between frames
 FRAME_COUNT = 10           # number of frames per cycle
 CYCLE_INTERVAL = 30        # seconds between each full send cycle
+
 SAVE_PATH = "frames/frame_grid.jpg"
+SAVE_RESPONSE_LOGS = 'responses/log.txt'
 
 TIMEOUT_SECONDS = 60
 
-SAVE_RESPONSE_LOGS = 'responses/log.txt'
 # ===================================================
 
 def resize_image_for_step_function(image, max_size_kb=150):
