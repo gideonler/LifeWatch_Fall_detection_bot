@@ -2,8 +2,8 @@
 
 ## Directory structure
 
-src/app: contains code to run the streaming app
-src/lambdas: contains the code of our lambda functions deployed on AWS
+- src/app: contains code to run the streaming app
+- src/lambdas: contains the code of our lambda functions deployed on AWS
 
 ## Instructions to set up
 
