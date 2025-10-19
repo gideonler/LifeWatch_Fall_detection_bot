@@ -3,4 +3,5 @@ Pillow
 requests
 boto3
 botocore
+streamlit
 yt-dlp
