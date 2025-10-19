@@ -17,6 +17,7 @@ These instructions detail how to set up the streaming app to perform real time m
 ```python live_stream_cam.py```
 
 Script Workflow:
+
 0. Checks available camera device and prompts User to select desired device to use. 
 1. Capture N frames from webcam at fixed intervals.
 2. Combine captured frames into a single image grid.
