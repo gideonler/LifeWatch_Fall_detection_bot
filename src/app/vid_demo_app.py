@@ -3,12 +3,10 @@ import cv2
 import os
 import subprocess
 from PIL import Image
-import io
-import base64
-import requests
 
+from live_stream_demo import combine_to_grid, send_image_to_lambda
 # ===================== CONFIG =====================
-
+# LAMBDA for step function 
 LAMBDA_URL = "https://eeiao7ouzeqrs2adwzcijtmfda0zqxoi.lambda-url.ap-southeast-1.on.aws/"
 CAPTURE_INTERVAL = 2
 FRAME_COUNT = 10
@@ -27,25 +25,6 @@ def download_youtube_video(url: str, filename: str) -> str:
     return os.path.abspath(filename)
 
 # ===================== IMG UTILS =====================
-
-def resize_image_for_step_function(image, max_size_kb=150):
-    """Resize image to fit within Step Functions 256KB limit."""
-    buf = io.BytesIO()
-    image.save(buf, format="JPEG", quality=85)
-    current_size_kb = len(buf.getvalue()) / 1024
-    if current_size_kb <= max_size_kb:
-        return image
-    resize_factor = (max_size_kb / current_size_kb) ** 0.5
-    new_width = int(image.width * resize_factor)
-    new_height = int(image.height * resize_factor)
-    resized = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-    for quality in [75, 65, 55, 45]:
-        buf = io.BytesIO()
-        resized.save(buf, format="JPEG", quality=quality)
-        if len(buf.getvalue()) / 1024 <= max_size_kb:
-            break
-    return resized
-
 def extract_frames(video_path, interval=3, count=10):
     """Extract `count` frames from video every `interval` seconds."""
     cap = cv2.VideoCapture(video_path)
@@ -64,39 +43,6 @@ def extract_frames(video_path, interval=3, count=10):
         frames.append(Image.fromarray(frame_rgb))
     cap.release()
     return frames
-
-def combine_to_grid(frames, grid_size=(2, 5)):
-    """Combine list of PIL Images into a grid."""
-    if not frames:
-        return None
-    w, h = frames[0].size
-    grid_w = grid_size[1] * w
-    grid_h = grid_size[0] * h
-    grid = Image.new("RGB", (grid_w, grid_h))
-    for idx, img in enumerate(frames):
-        x = (idx % grid_size[1]) * w
-        y = (idx // grid_size[1]) * h
-        grid.paste(img, (x, y))
-    return grid
-
-# ===================== SEND TO LAMBDA =====================
-
-def send_image_to_lambda(image):
-    image = resize_image_for_step_function(image)
-    buf = io.BytesIO()
-    image.save(buf, format="JPEG")
-    img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-    payload = {"image_base64": img_b64}
-
-    try:
-        st.info("📤 Sending image to Lambda...")
-        response = requests.post(LAMBDA_URL, json=payload, timeout=TIMEOUT_SECONDS)
-        response.raise_for_status()
-        st.success("✅ Lambda response received.")
-        return response.json()
-    except Exception as e:
-        st.error(f"❌ Error sending to Lambda: {e}")
-        return None
 
 # ===================== STREAMLIT =====================
 
