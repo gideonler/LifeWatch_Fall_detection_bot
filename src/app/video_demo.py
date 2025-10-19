@@ -8,7 +8,7 @@ from live_stream_demo import combine_to_grid, send_image_to_lambda
 # ===================== CONFIG =====================
 # LAMBDA for step function 
 LAMBDA_URL = "https://eeiao7ouzeqrs2adwzcijtmfda0zqxoi.lambda-url.ap-southeast-1.on.aws/"
-CAPTURE_INTERVAL = 2
+CAPTURE_INTERVAL = 3
 FRAME_COUNT = 10
 MAX_SIZE_KB = 150
 TIMEOUT_SECONDS = 30
@@ -46,7 +46,7 @@ def extract_frames(video_path, interval=3, count=10):
 
 # ===================== STREAMLIT =====================
 
-st.title("🎬 DEMO: Video Frame Capture + Lambda Processing")
+st.title("🎬 DEMO: LifeWatch using Video as inputs")
 
 VIDEO_SAVE_PATH = 'test-data/test_video.mp4'
 FRAME_SAVE_PATH = 'frames/output_frames_grid.jpg'
@@ -85,11 +85,14 @@ if st.button("📥 Download & Process Video"):
 
             grid.save(FRAME_SAVE_PATH, format="JPEG", quality=85, optimize=True)
             print(f"Grid image saved at {FRAME_SAVE_PATH} (size: {os.path.getsize(FRAME_SAVE_PATH)/1024:.1f} KB)")
-            
-            # 4️⃣ Send to Lambda
-            result = send_image_to_lambda(grid)
-            if result:
-                st.subheader("🧠 Lambda Result")
-                st.json(result)
         else:
             st.error("⚠️ Failed to extract or combine frames.")
+
+        # 4️⃣ Send to Lambda
+        result = send_image_to_lambda(grid)
+        if result:
+            st.subheader("🧠 Grid sent to lambda step function")
+            st.json(result)
+        else: 
+            st.error("⚠️ Failed to send to lambda.")
+    
