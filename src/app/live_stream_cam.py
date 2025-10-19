@@ -14,7 +14,6 @@ import base64
 from PIL import Image
 import io
 
-import boto3
 from botocore.config import Config
 import json
 
@@ -26,9 +25,6 @@ CYCLE_INTERVAL = 30        # seconds between each full send cycle
 SAVE_PATH = "frames/frame_grid.jpg"
 
 TIMEOUT_SECONDS = 60
-# lambda_client = boto3.client("lambda", region_name="ap-southeast-1", config=Config(connect_timeout=TIMEOUT_SECONDS)) # read_timeout=TIMEOUT_SECONDS, 
-# LAMBDA_NAME = 'trigger_step_function'
-# LAMBDA_NAME = 'elderly-home-monitoring-s-LambdasVideoInvokeB03202-zHGWQu2gYAJ1'
 
 SAVE_RESPONSE_LOGS = 'responses/log.txt'
 # ===================================================
@@ -79,7 +75,7 @@ def capture_frames(interval=3, count=10):
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         frames.append(Image.fromarray(frame_rgb))
         print(f"✅ Captured frame {i+1}/{count}")
-        ## 3s interval between captures
+
         time.sleep(interval)
 
     cap.release()
@@ -112,8 +108,7 @@ def send_image_to_lambda(image):
     
     payload = {
         "image_base64": img_b64
-        #"metadata": {"source": "python-live-stream"}
-               }
+        }
 
     try:
         print("📤 Sending grid to Lambda...")
@@ -123,14 +118,6 @@ def send_image_to_lambda(image):
         return response.json()
     except Exception as e:
         print(f"❌ Error sending to Lambda URL: {e}")
-        # print("⚠️ URL failed, using boto3 fallback...")
-        # resp = lambda_client.invoke(
-        #     FunctionName=LAMBDA_NAME,
-        #     InvocationType="RequestResponse",
-        #     Payload=json.dumps(payload)
-        # )
-        # return json.load(resp["Payload"])
-    
 
 def log_lambda_response(response):
     """Append Lambda response (JSON) to local log file."""
@@ -168,10 +155,6 @@ def main_loop():
         grid.save(SAVE_PATH)
         print(f"💾 Saved grid locally as {SAVE_PATH}")
 
-        # from PIL import Image
-        # # Open image
-        # grid = Image.open("test-data/frames_grid.jpg")
-
         # 4️⃣ Send to Lambda
         result = send_image_to_lambda(grid)
         if result:
@@ -184,7 +167,6 @@ def main_loop():
         wait_time = max(0, CYCLE_INTERVAL - elapsed)
         print(f"⏳ Waiting {wait_time:.1f}s for next cycle...\n")
         time.sleep(wait_time)
-
 
 if __name__ == "__main__":
     try:
