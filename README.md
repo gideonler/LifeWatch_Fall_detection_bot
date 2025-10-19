@@ -2,33 +2,13 @@
 
 ## Directory structure
 
-src/app
-src/constructs
-src/lambdas
+src/app: contains code to run the streaming app
+src/lambdas: contains the code of our lambda functions deployed on AWS
 
-## Commit messages
+## Instructions to set up
 
-Prefixes:
+These instructions detail how to set up the streaming app to perform real time monitoring of alerts. 
 
-- infra: for infrastructure (constructs) related commits
-- app: for application related commits
-- lambda: for lambda related commits
-- docs: documentation related commits
-- config: configuration related commits
+### Create the virtual environment to install dependencies for app
 
-## Instructions
-
-### Creating the virtual environment to install dependencies
-
-```python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt```
-
-### Managing the infrastructure
-
-#### Deploying the infrastruction to AWS
-
-```cdk bootstrap && cdk deploy```
-Note that if the deployment fails, you may need to run the destroy command below to destroy the services that were created
-
-#### Destroying the infrastructre
-
-```cdk destroy```
+```python3 -m venv .venv && source .venv/bin/activate && cd src/app && pip install -r requirements.txt```

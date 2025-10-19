@@ -1,157 +1,139 @@
 import boto3
 import json
 import base64
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 import uuid
 from typing import List, Dict, Any
+import os
+import requests
 
+# ====== Config ======
 BUCKET = "elderly-home-monitoring-images"
-PREFIX = "detected-images/datestr=20251012/"
+EVENTS_BUCKET = os.environ['EVENTS_BUCKET']
+PREFIX = f"detected-images/datestr={date.today().strftime('%Y%m%d')}/"
 KNOWLEDGE_BASE_PREFIX = "knowledge-base/"
+SNS_TOPIC_ARN = "arn:aws:sns:ap-southeast-1:730335529101:alerts"
+TELEGRAM_BOT_TOKEN = '8422366020:AAHX5oRIsEnp_7RcajdruGKIe6ggFmfvHa8'
 
-# Initialize clients
+# ====== Initialize clients ======
 bedrock_runtime = boto3.client("bedrock-runtime", region_name="ap-southeast-1")
 s3 = boto3.client("s3")
+sns = boto3.client("sns")
+dynamodb = boto3.resource("dynamodb")
 
-# Model ID
+# ====== Bedrock model ID ======
 MODEL_ID = "anthropic.claude-3-5-sonnet-20240620-v1:0"
 
-# Enhanced system prompt with knowledge base context
+# ====== System prompt ======
 SYSTEM_PROMPT = """
-You are an AI language model assistant specialized in monitoring people in their living spaces. Be it out doors or in doors. 
+You are an AI assistant specialized in monitoring people in their living spaces, both indoors and outdoors. 
+Your goal is to identify whether the person in view is safe, relaxed, or in potential distress.
 
 You are to watch for any potentially concerning events. These include falls, medical emergencies, unusual behavior, or safety concerns that require immediate attention.
 
-I have attached an image from a camera feed. Look for signs of distress, falls, medical emergencies, or any situation where the person might need help.
+An image from a camera feed has been attached. Analyze the situation carefully.
 
 You must:
 1. Identify **any person** in the image — even small or distant figures.
 2. Examine **posture, body angle, and ground contact** to detect falls or unusual positions.
-3. Notice **unusual stillness or lying posture** compared to surroundings (e.g., on the floor, couch edge, or bathroom).
-4. Consider **context clues** — body near furniture, motion blur suggesting collapse, limbs in unnatural orientation.
-5. Do not ignore small figures — zoom in mentally and judge whether they may have fallen.
+3. Assess **facial expressions, body tension, and comfort cues** — a relaxed face and natural posture usually indicate the person is resting or chilling, **not injured**.
+4. Detect **pain, discomfort, confusion, or unconsciousness** through facial expression, limb stiffness, or unnatural positioning.
+5. Consider **context clues** — such as being on a bed, couch, or yoga mat (normal) versus on the hard floor (potential fall).
+6. Distinguish between **intentional lying down** (resting, sleeping, watching TV) and **accidental lying down** (collapse, slumped, awkward limb positions).
+7. Do not ignore small figures — zoom in mentally and judge whether they may have fallen.
 
 You will also be provided with context from previous similar events to help you make better decisions.
 
 Your job is to determine the severity level.
 Severity levels can take on the following values:
-    0: No issues detected requiring immediate attention
-    1: Possible issue detected requiring attention (soft alert)
-    2: Issue requiring immediate action detected (high alert)
+    0: No issues detected (normal or relaxed posture)
+    1: Possible issue detected requiring attention (soft alert, e.g., uncertain posture or mild concern)
+    2: Issue requiring immediate action detected (high alert — fall, unconsciousness, visible distress)
+
+When describing the event, given a concise description and use the tone and wording you use as if speaking to a family member of the person in the photo.
 
 Please respond with the following JSON output format:
-{"alert_level":int,
-"reason":string,
-"log_file_name":string,
-"brief_description": string,
-"full_description": string}
+{
+  "alert_level": int,
+  "reason": string,
+  "log_file_name": string,
+  "brief_description": string,
+  "full_description": string
+}
 
-Do not add any preamble or explanation - your correctly formatted JSON response will trigger the appropriate alerts.
+Do not add any preamble or explanation — your correctly formatted JSON response will trigger the appropriate alerts.
 """
 
+# ====== Telegram helpers ======
+def get_all_subscribers() -> List[str]:
+    table = dynamodb.Table("telegram_subscribers")
+    response = table.scan()
+    return [item["chat_id"] for item in response.get("Items", [])]
+
+def send_telegram_message_to(chat_id: str, text: str):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+    response = requests.post(url, json=payload)
+    response.raise_for_status()
+
+def broadcast_telegram_message(text: str):
+    chat_ids = get_all_subscribers()
+    for chat_id in chat_ids:
+        try:
+            send_telegram_message_to(chat_id, text)
+        except Exception as e:
+            print(f"Failed to send to {chat_id}: {e}")
+
+# ====== Bedrock helpers ======
 def create_multimodal_prompt(image_data: bytes, text: str, content_type: str, system_prompt: str = None, max_tokens: int = 1000, temperature: float = 0.5, model_id: str = MODEL_ID):
-    """Create a multimodal prompt structure - handles both Claude and Mistral formats"""
-    
-    if "anthropic" in model_id.lower():
-        prompt = {
-            "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": content_type,
-                                "data": base64.b64encode(image_data).decode("utf-8"),
-                            },
-                        },
-                        {"type": "text", "text": text},
-                    ],
-                }
-            ],
-        }
-        if system_prompt:
-            prompt["system"] = system_prompt
-    else:
-        prompt = {
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": content_type,
-                                "data": base64.b64encode(image_data).decode("utf-8"),
-                            },
-                        },
-                        {"type": "text", "text": text},
-                    ],
-                }
-            ],
-        }
-        if system_prompt:
-            prompt["system"] = system_prompt
-    
+    prompt = {
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": content_type, "data": base64.b64encode(image_data).decode("utf-8")}},
+                    {"type": "text", "text": text},
+                ],
+            }
+        ],
+    }
+    if system_prompt:
+        prompt["system"] = system_prompt
     return prompt
 
-def invoke_bedrock_model(prompt, model_id: str = MODEL_ID, max_tokens: int = 1000, temperature: float = 0.5):
-    """Invoke Bedrock model with given prompt and return the response text"""
+def invoke_bedrock_model(prompt, model_id: str = MODEL_ID):
     try:
-        
         response = bedrock_runtime.invoke_model(
             modelId=model_id,
             body=json.dumps(prompt),
             contentType="application/json",
             accept="application/json",
         )
-        
         response_body = json.loads(response.get("body").read())
-        print(f"Bedrock response: {response_body}")
-        
         if "content" in response_body and len(response_body["content"]) > 0:
-            analysis = response_body["content"][0]["text"]
-        else:
-            analysis = response_body.get("text", str(response_body))
-        
-        print(f"Bedrock analysis: {analysis}")
-        
-        return analysis
-        
+            return response_body["content"][0]["text"]
+        return response_body.get("text", str(response_body))
     except Exception as e:
         print(f"Error invoking Bedrock: {e}")
         raise
 
+# ====== Knowledge base helpers ======
 def get_historical_events(hours_back: int = 24) -> List[Dict[str, Any]]:
-    """Retrieve historical events from the knowledge base"""
+    cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours_back)
     try:
-        # Get events from the last N hours
-        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours_back)
-        
-        response = s3.list_objects_v2(
-            Bucket=BUCKET, 
-            Prefix=KNOWLEDGE_BASE_PREFIX
-        )
-        
+        response = s3.list_objects_v2(Bucket=EVENTS_BUCKET, Prefix=KNOWLEDGE_BASE_PREFIX)
         if "Contents" not in response:
             return []
-        
+
         events = []
         for obj in response["Contents"]:
             if obj["Key"].endswith("_analysis.json"):
                 try:
-                    # Get the object
                     file_response = s3.get_object(Bucket=BUCKET, Key=obj["Key"])
                     event_data = json.loads(file_response["Body"].read())
-                    
-                    # Parse timestamp and filter by time
                     if "timestamp" in event_data:
                         event_time = datetime.strptime(event_data["timestamp"], "%Y%m%d-%H%M%S")
                         if event_time.replace(tzinfo=timezone.utc) >= cutoff_time:
@@ -159,35 +141,25 @@ def get_historical_events(hours_back: int = 24) -> List[Dict[str, Any]]:
                 except Exception as e:
                     print(f"Error reading event {obj['Key']}: {e}")
                     continue
-        
-        # Sort by timestamp (most recent first)
         events.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
-        
-        return events[:10]  # Return last 10 events
-        
+        return events[:10]
     except Exception as e:
         print(f"Error retrieving historical events: {e}")
         return []
 
 def format_context_for_prompt(events: List[Dict[str, Any]]) -> str:
-    """Format historical events into context for the prompt"""
     if not events:
         return "No previous events found in the knowledge base."
-    
     context = "Previous events from knowledge base:\n"
     for i, event in enumerate(events, 1):
         context += f"{i}. Time: {event.get('timestamp', 'Unknown')}\n"
         context += f"   Alert Level: {event.get('alert_level', 'Unknown')}\n"
         context += f"   Reason: {event.get('reason', 'Unknown')}\n"
-        context += f"   Brief: {event.get('brief_description', 'Unknown')}\n"
-        context += "\n"
-    
+        context += f"   Brief: {event.get('brief_description', 'Unknown')}\n\n"
     return context
 
 def save_to_knowledge_base(analysis_result: Dict[str, Any], image_key: str):
-    """Save analysis result to knowledge base"""
     try:
-        # Create knowledge base entry
         kb_entry = {
             "timestamp": analysis_result.get("timestamp"),
             "image_key": image_key,
@@ -200,56 +172,45 @@ def save_to_knowledge_base(analysis_result: Dict[str, Any], image_key: str):
             "knowledge_base_id": str(uuid.uuid4()),
             "created_at": datetime.now(timezone.utc).isoformat()
         }
-        
-        # Save to knowledge base
         kb_key = f"{KNOWLEDGE_BASE_PREFIX}{analysis_result.get('timestamp', 'unknown')}_{analysis_result.get('log_file_name', 'event')}.json"
-        
         s3.put_object(
-            Bucket=BUCKET,
+            Bucket=EVENTS_BUCKET,
             Key=kb_key,
             Body=json.dumps(kb_entry, indent=2),
             ContentType="application/json"
         )
-        
         print(f"Saved to knowledge base: s3://{BUCKET}/{kb_key}")
-        
     except Exception as e:
         print(f"Error saving to knowledge base: {e}")
 
+# ====== Lambda handler ======
 def lambda_handler(event, context):
-    # 1️⃣ List objects in S3
+    # 1️⃣ List images
     response = s3.list_objects_v2(Bucket=BUCKET, Prefix=PREFIX)
     if "Contents" not in response:
         return {"statusCode": 404, "body": "No files found."}
-
     jpg_files = [obj for obj in response["Contents"] if obj["Key"].lower().endswith('.jpg')]
     if not jpg_files:
         return {"statusCode": 404, "body": "No JPG images found."}
-
-    # 2️⃣ Pick the latest image
     latest_file = max(jpg_files, key=lambda x: x["LastModified"])
     key = latest_file["Key"]
     print(f"Analyzing frame: s3://{BUCKET}/{key}")
 
-    # 3️⃣ Get historical context from knowledge base
-    print("Retrieving historical events...")
-    historical_events = get_historical_events(hours_back=24)  # Last 24 hours
+    # 2️⃣ Historical context
+    historical_events = get_historical_events(hours_back=24)
     context_text = format_context_for_prompt(historical_events)
-    print(f"Found {len(historical_events)} historical events")
 
-    # 4️⃣ Download image data directly
+    # 3️⃣ Download image
     try:
         response = s3.get_object(Bucket=BUCKET, Key=key)
         image_data = response["Body"].read()
         content_type = response.get("ContentType", "image/jpeg")
-        print(f"Downloaded image: {len(image_data)} bytes, content type: {content_type}")
     except Exception as e:
         return {"statusCode": 500, "body": f"Failed to download image: {e}"}
 
-    # 5️⃣ Create enhanced analysis prompt with knowledge base context
+    # 4️⃣ Prompt
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     monitoring_instruction = "Monitor for falls, medical emergencies, or unusual behavior in person's living space"
-    
     agent_prompt = f"""
     Analyze the provided image. {monitoring_instruction}
     Use the timestamp '{timestamp}' for log file name.
@@ -257,13 +218,10 @@ def lambda_handler(event, context):
     CONTEXT FROM PREVIOUS EVENTS:
     {context_text}
     
-    Use this historical context to help determine if the current situation is normal, concerning, or requires immediate attention. Consider patterns, frequency, and severity of similar past events.
-    
     If no concerning activity is detected, set 'alert_level':0 and all other fields to 'no concerning activity detected' and explain why
     Please return your valid formatted JSON (confirm no double quotes appear in description text):
     """
 
-    # 6️⃣ Create multimodal prompt
     prompt = create_multimodal_prompt(
         image_data=image_data,
         text=agent_prompt,
@@ -273,28 +231,19 @@ def lambda_handler(event, context):
         model_id=MODEL_ID
     )
 
-    # 7️⃣ Invoke Bedrock with knowledge base context
+    # 5️⃣ Bedrock analysis
     try:
-        analysis_result = invoke_bedrock_model(
-            prompt=prompt, 
-            model_id=MODEL_ID
-        )
-        
-        # Parse JSON from response
+        analysis_result = invoke_bedrock_model(prompt, model_id=MODEL_ID)
         final_text = analysis_result.strip()
         if final_text.startswith("```json"):
             final_text = final_text.split("```json")[1].split("```")[0].strip()
-        
         try:
             report = json.loads(final_text)
-            # Add metadata
             report["timestamp"] = timestamp
             report["image_key"] = key
             report["model_used"] = MODEL_ID
             report["historical_context_used"] = len(historical_events)
-            
-        except json.JSONDecodeError as e:
-            print(f"Failed to parse Bedrock response as JSON: {e}")
+        except json.JSONDecodeError:
             report = {
                 "timestamp": timestamp,
                 "image_key": key,
@@ -306,9 +255,7 @@ def lambda_handler(event, context):
                 "model_used": MODEL_ID,
                 "historical_context_used": len(historical_events)
             }
-
     except Exception as e:
-        print(f"Bedrock invocation failed: {e}")
         report = {
             "timestamp": timestamp,
             "image_key": key,
@@ -321,24 +268,35 @@ def lambda_handler(event, context):
             "historical_context_used": len(historical_events)
         }
 
-    # 8️⃣ Save analysis to regular location
+    # 6️⃣ Send Telegram alert to all subscribers
+    try:
+        if int(report["alert_level"]) >= 2:
+            presigned_url = s3.generate_presigned_url('get_object', Params={'Bucket': BUCKET, 'Key': key}, ExpiresIn=3600)
+            dt_obj = datetime.strptime(report.get('timestamp', "N/A"), "%Y%m%d-%H%M%S")
+            readable_timestamp = dt_obj.strftime("%d %b %Y, %H:%M:%S") if dt_obj else "N/A"
+            alert_emoji = "🚨" if int(report["alert_level"]) == 2 else "⚠️"
+            message = (
+                f"{alert_emoji} <b>ALERT DETECTED</b>\n\n"
+                f"<b>🕒 Time:</b> {readable_timestamp}\n"
+                f"<b>💬 Reason:</b> {report.get('reason', 'N/A')}\n\n"
+                f"<b>📝 Summary:</b> {report.get('brief_description', 'N/A')}\n\n"
+                f"<b>📖 Full Description:</b>\n<i>{report.get('full_description', 'N/A')}</i>\n\n"
+                f"<b>🖼️ Image:</b> <a href=\"{presigned_url}\">View Frame</a>"
+            )
+            broadcast_telegram_message(message)
+            print("Alert sent to all Telegram subscribers")
+    except Exception as e:
+        print(f"Failed to send alert to Telegram: {e}")
+
+    # 7️⃣ Save analysis to S3
     output_key = key.replace(".jpg", "_analysis.json")
     try:
-        s3.put_object(
-            Bucket=BUCKET,
-            Key=output_key,
-            Body=json.dumps(report, indent=2),
-            ContentType="application/json"
-        )
-        print(f"Saved analysis to s3://{BUCKET}/{output_key}")
+        s3.put_object(Bucket=EVENTS_BUCKET, Key=output_key, Body=json.dumps(report, indent=2), ContentType="application/json")
     except Exception as e:
         print(f"Failed to save to S3: {e}")
 
-    # 9️⃣ Save to knowledge base for future context
+    # 8️⃣ Save to knowledge base
     save_to_knowledge_base(report, key)
 
     print("Final Analysis Report:", json.dumps(report, indent=2))
-    return {
-        "statusCode": 200,
-        "body": json.dumps(report)
-    }
+    return {"statusCode": 200, "body": json.dumps(report)}
