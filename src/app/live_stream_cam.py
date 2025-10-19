@@ -41,6 +41,7 @@ import cv2
 import time
 import requests
 import base64
+import subprocess
 from PIL import Image
 import io
 
@@ -60,7 +61,7 @@ SAVE_RESPONSE_LOGS = 'responses/log.txt'
 
 TIMEOUT_SECONDS = 60
 
-# ===================================================
+# =================== IMAGE UTILS =====================
 
 def resize_image_for_step_function(image, max_size_kb=150):
     """Resize image to fit within Step Functions 256KB limit"""
@@ -89,10 +90,10 @@ def resize_image_for_step_function(image, max_size_kb=150):
     
     return resized
 
-
-def capture_frames(interval=3, count=10):
+def capture_frames(interval=3, count=10, cam_index=0):
     """Capture `count` frames from webcam, every `interval` seconds."""
-    cap = cv2.VideoCapture(0)
+
+    cap = cv2.VideoCapture(cam_index)
     if not cap.isOpened():
         print("❌ Unable to access webcam.")
         return []
@@ -114,7 +115,6 @@ def capture_frames(interval=3, count=10):
     cap.release()
     return frames
 
-
 def combine_to_grid(frames, grid_size=(2, 5)):
     """Combine list of PIL Images into a grid."""
     if not frames:
@@ -130,6 +130,7 @@ def combine_to_grid(frames, grid_size=(2, 5)):
         grid.paste(img, (x, y))
     return grid
 
+# ===================== SEND IMAGE TO LAMBDA =====================
 
 def send_image_to_lambda(image):
     image = resize_image_for_step_function(image)
@@ -152,6 +153,8 @@ def send_image_to_lambda(image):
     except Exception as e:
         print(f"❌ Error sending to Lambda URL: {e}")
 
+# ===================== OTHER UTILS =====================
+
 def log_lambda_response(response):
     """Append Lambda response (JSON) to local log file."""
     if not response:
@@ -164,13 +167,24 @@ def log_lambda_response(response):
         f.write(json.dumps(entry) + "\n")
     print(f"🗂️ Logged Lambda response to {SAVE_RESPONSE_LOGS}")
 
+def check_devices(): 
+    print("\n📸 Checking available camera devices:")
+    cmd = ["ffmpeg", "-f", "avfoundation", "-list_devices", "true", "-i", ""]
+    result = subprocess.run(cmd, stderr=subprocess.PIPE, text=True)
+    print(result.stderr)
+# ===================== MAIN LOOP =====================
+
 def main_loop():
     print("🎬 Starting live stream loop...")
+
+    check_devices()
+    selected_camera = int(input("Enter camera index to use: "))
+
     while True:
         start_time = time.time()
 
         # 1️⃣ Capture frames
-        frames = capture_frames(interval=CAPTURE_INTERVAL, count=FRAME_COUNT)
+        frames = capture_frames(interval=CAPTURE_INTERVAL, count=FRAME_COUNT, cam_index=selected_camera)
         if not frames:
             print("⚠️ No frames captured, retrying next cycle.")
             # sleep before retrying to avoid tight retry loops
