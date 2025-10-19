@@ -1,7 +1,9 @@
 # SCRIPT Objective: 
-# Live Stream CAM Script -- without streamlit interface
-# regularly calls function to (1) capture frame (2) create grid (3) send to lambda 
-# every 30s
+# Live Stream CAM Script - without streamlit interface
+# Calls function every 30s to 
+# (1) capture frame 
+# (2) create grid 
+# (3) send to lambda 
 
 ## ISSUE: 500 server error when sending req to lambda 
 """
@@ -26,18 +28,48 @@ import json
 
 # ===================== CONFIG =====================
 LAMBDA_URL = "https://eeiao7ouzeqrs2adwzcijtmfda0zqxoi.lambda-url.ap-southeast-1.on.aws/"
+# LAMBDA_URL = 'https://abrpnerwsi3dglatgaapzb5qia0ofkqw.lambda-url.ap-southeast-1.on.aws/'
 CAPTURE_INTERVAL = 3       # seconds between frames
 FRAME_COUNT = 10           # number of frames per cycle
 CYCLE_INTERVAL = 30        # seconds between each full send cycle
 SAVE_PATH = "frames/frame_grid.jpg"
 
 TIMEOUT_SECONDS = 60
-lambda_client = boto3.client("lambda", region_name="ap-southeast-1", config=Config(connect_timeout=TIMEOUT_SECONDS)) # read_timeout=TIMEOUT_SECONDS, 
-
-LAMBDA_NAME = 'elderly-home-monitoring-s-LambdasVideoInvokeB03202-zHGWQu2gYAJ1'
+# lambda_client = boto3.client("lambda", region_name="ap-southeast-1", config=Config(connect_timeout=TIMEOUT_SECONDS)) # read_timeout=TIMEOUT_SECONDS, 
+# LAMBDA_NAME = 'trigger_step_function'
+# LAMBDA_NAME = 'elderly-home-monitoring-s-LambdasVideoInvokeB03202-zHGWQu2gYAJ1'
 
 SAVE_RESPONSE_LOGS = 'responses/log.txt'
 # ===================================================
+
+def resize_image_for_step_function(image, max_size_kb=150):
+    """Resize image to fit within Step Functions 256KB limit"""
+    # Convert to bytes to check size
+    buf = io.BytesIO()
+    image.save(buf, format="JPEG", quality=85)
+    current_size_kb = len(buf.getvalue()) / 1024
+    
+    if current_size_kb <= max_size_kb:
+        return image  # Already small enough
+    
+    # Calculate resize factor
+    resize_factor = (max_size_kb / current_size_kb) ** 0.5
+    new_width = int(image.width * resize_factor)
+    new_height = int(image.height * resize_factor)
+    
+    # Resize image
+    resized = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+    
+    # Try different quality levels if still too big
+    for quality in [75, 65, 55, 45]:
+        buf = io.BytesIO()
+        resized.save(buf, format="JPEG", quality=quality)
+        if len(buf.getvalue()) / 1024 <= max_size_kb:
+            break
+    
+    return resized
+
+
 def capture_frames(interval=3, count=10):
     """Capture `count` frames from webcam, every `interval` seconds."""
     cap = cv2.VideoCapture(0)
@@ -80,12 +112,16 @@ def combine_to_grid(frames, grid_size=(2, 5)):
 
 
 def send_image_to_lambda(image):
+    image = resize_image_for_step_function(image)
+
     buf = io.BytesIO() ## creates in-mem binary stream, file in RAM
     image.save(buf, format="JPEG") ## instead of saving to disk, save to mem
     img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
     
-    payload = {"image_base64": img_b64, 
-               "metadata": {"source": "python-live-stream"}
+    
+    payload = {
+        "image_base64": img_b64
+        #"metadata": {"source": "python-live-stream"}
                }
 
     try:
@@ -96,13 +132,13 @@ def send_image_to_lambda(image):
         return response.json()
     except Exception as e:
         print(f"❌ Error sending to Lambda URL: {e}")
-        print("⚠️ URL failed, using boto3 fallback...")
-        resp = lambda_client.invoke(
-            FunctionName=LAMBDA_NAME,
-            InvocationType="RequestResponse",
-            Payload=json.dumps(payload)
-        )
-        return json.load(resp["Payload"])
+        # print("⚠️ URL failed, using boto3 fallback...")
+        # resp = lambda_client.invoke(
+        #     FunctionName=LAMBDA_NAME,
+        #     InvocationType="RequestResponse",
+        #     Payload=json.dumps(payload)
+        # )
+        # return json.load(resp["Payload"])
     
 
 def log_lambda_response(response):
@@ -140,6 +176,10 @@ def main_loop():
         # 3️⃣ Save locally
         grid.save(SAVE_PATH)
         print(f"💾 Saved grid locally as {SAVE_PATH}")
+
+        # from PIL import Image
+        # # Open image
+        # grid = Image.open("test-data/frames_grid.jpg")
 
         # 4️⃣ Send to Lambda
         result = send_image_to_lambda(grid)
