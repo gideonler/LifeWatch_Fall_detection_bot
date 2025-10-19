@@ -1,0 +1,79 @@
+{
+  "Comment": "Elderly Fall Detection Workflow with Error Handling",
+  "StartAt": "VideoInvokeLambda",
+  "States": {
+    "VideoInvokeLambda": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:ap-southeast-1:730335529101:function:elderly-home-monitoring-s-LambdasVideoInvokeB03202-zHGWQu2gYAJ1",
+      "ResultSelector": {
+        "parsed.$": "States.StringToJson($.body)"
+      },
+      "Next": "ShouldContinueChoice",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "LogError"
+        }
+      ]
+    },
+    "ShouldContinueChoice": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.parsed.should_continue",
+          "BooleanEquals": true,
+          "Next": "AgentInvokeLambda"
+        }
+      ],
+      "Default": "NoAction"
+    },
+    "AgentInvokeLambda": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:ap-southeast-1:730335529101:function:elderly-home-monitoring-LambdasAgentInvoke5763D1F5-jmACohkTb086",
+      "Next": "AgentExecutorLambda",
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "LogError"
+        }
+      ]
+    },
+    "AgentExecutorLambda": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:ap-southeast-1:730335529101:function:agent_executor_lambda",
+      "End": true,
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Next": "LogError"
+        }
+      ]
+    },
+    "NoAction": {
+      "Type": "Pass",
+      "Comment": "No human detected or event discarded. End quietly.",
+      "Next": "EndState"
+    },
+    "LogError": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:ap-southeast-1:730335529101:function:elderly-home-monitoring-ErrorLogger",
+      "Comment": "Optional logging Lambda to capture error context.",
+      "Next": "FailState"
+    },
+    "FailState": {
+      "Type": "Fail",
+      "Error": "WorkflowFailed",
+      "Cause": "An error occurred in one of the Lambda functions."
+    },
+    "EndState": {
+      "Type": "Succeed",
+      "Comment": "Workflow completed successfully."
+    }
+  }
+}

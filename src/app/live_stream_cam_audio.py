@@ -16,7 +16,7 @@ import requests
 import base64
 from PIL import Image
 import io
-
+import base64
 import boto3
 from botocore.config import Config
 import json
