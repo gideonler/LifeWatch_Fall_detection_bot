@@ -1,5 +1,8 @@
-<img src="imgs/lifewatchlogo.jpg" alt="lifewatch_logo" width="200">
-# AI Agent Global Hackathon - Team LifeWatch
+<p align="center">
+  <img src="imgs/lifewatchlogo.jpg" alt="lifewatch_logo" width="200">
+</p>
+
+<h1 align="center"><strong>AI Agent Global Hackathon - Team LifeWatch</strong></h1>
 
 <div style="display: flex; gap: 20px;">
     <img src="imgs/alert.png" alt="bot_interface1" width="300">
