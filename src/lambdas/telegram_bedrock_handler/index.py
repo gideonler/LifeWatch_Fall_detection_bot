@@ -63,6 +63,12 @@ def parse_agent_response(response):
         traceback.print_exc()
     
     print("Extracted reply_text:", reply_text)
+    
+    # Fix the formatting issue - convert literal \n to actual newlines
+    if reply_text:
+        reply_text = reply_text.replace('\\n', '\n')  # Convert literal \n to actual newlines
+        reply_text = reply_text.replace('\n\n\n', '\n\n')  # Clean up excessive newlines
+    
     return reply_text.strip() if reply_text else None
 
 def handle_subscribe(chat_id, username):
@@ -115,7 +121,23 @@ def lambda_handler(event, context):
         elif lowered == "/status":
             handle_status(chat_id)
             return {"statusCode": 200, "body": "Status checked"}
-
+        elif lowered == "/start":
+            welcome_message = (
+                "👋 Welcome to <b>LifeWatch</b>!\n\n"
+                "Start by tapping on the bottom left menu and choosing <b>/subscribe</b> "
+                "to receive real-time fall alerts.\n\n"
+                "You can also chat with me naturally — for example:\n"
+                "• <i>How many falls happened today?</i>\n"
+                "• <i>Show me recent alerts</i>\n\n"
+                "I can help you with:\n"
+                "• Counting fall incidents in a specific time period\n"
+                "• Summarizing recent fall events\n"
+                "• Identifying patterns in fall incidents\n"
+                "• Explaining serious fall events (alert level ≥ 2)\n\n"
+                "Let's keep your loved ones safe ❤️"
+            )
+            send_telegram_message(chat_id, welcome_message)
+            return {"statusCode": 200, "body": "Start message sent"}
         # Invoke Bedrock Agent
         print(f"Invoking agent with text: {text}")
         response = bedrock_client.invoke_agent(
