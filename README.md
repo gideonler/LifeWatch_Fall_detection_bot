@@ -5,7 +5,7 @@
 <h1 align="center"><strong>AI Agent Global Hackathon - Team LifeWatch</strong></h1>
 
 <div style="display: flex; gap: 20px;">
-    <img src="imgs/alert.png" alt="bot_interface1" width="300">
+    <img src="imgs/serious_fall.png" alt="bot_interface1" width="300">
     <img src="imgs/lifewatch_subscribe.png" alt="got_interface2" width="300">
 </div>
 
