@@ -4,6 +4,9 @@
 
 - src/app: contains code to run the streaming app
 - src/lambdas: contains the code of our lambda functions deployed on AWS
+- src/bedrock: contains instructions for Bedrock and Knowledge Base setup
+- src/dynamoDB: contains instructions for DynamoDB setup to save subscribers to the bot
+- 
 
 ## Instructions to set up
 

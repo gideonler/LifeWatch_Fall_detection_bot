@@ -11,6 +11,8 @@ AGENT_ALIAS_ID = os.environ['AGENT_ALIAS_ID']
 REGION = os.environ.get('REGION', 'ap-southeast-1')
 TABLE_NAME = os.environ.get("SUBSCRIBERS_TABLE", "telegram_subscribers")
 
+
+
 # AWS Resource
 dynamodb = boto3.resource("dynamodb", region_name=REGION)
 table = dynamodb.Table(TABLE_NAME)
