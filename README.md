@@ -4,12 +4,14 @@
 
 <h1 align="center"><strong>AI Agent Global Hackathon - Team LifeWatch</strong></h1>
 
+<p align="center">
 <div style="display: flex; gap: 20px;">
     <img src="imgs/serious_fall.png" alt="bot_interface1" width="300">
     <img src="imgs/lifewatch_subscribe.png" alt="got_interface2" width="300">
     <img src="imgs/whattodo.png" alt="whattodo" width="300">
     <img src="imgs/otherfalls.png" alt="otherfalls" width="300">
 </div>
+</p>
 
 ## Directory structure
 
