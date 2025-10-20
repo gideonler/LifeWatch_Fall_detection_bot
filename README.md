@@ -1,4 +1,4 @@
-# fall_detection_agentic_aws_hackathon
+# AI Agent Global Hackathon - Team LifeWatch
 
 ## Directory structure
 
@@ -6,7 +6,6 @@
 - src/lambdas: contains the code of our lambda functions deployed on AWS
 - src/bedrock: contains instructions for Bedrock and Knowledge Base setup
 - src/dynamoDB: contains instructions for DynamoDB setup to save subscribers to the bot
-- 
 
 ## Instructions to set up
 
