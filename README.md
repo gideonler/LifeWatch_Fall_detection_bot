@@ -1,4 +1,8 @@
+![lifewatch_logo](imgs/lifewatchlogo.jpg)
 # AI Agent Global Hackathon - Team LifeWatch
+
+![bot_interface1](imgs/alert.png)
+![got_interface2](imgs/lifewatch_subscribe.png)
 
 ## Directory structure
 
@@ -6,6 +10,9 @@
 - src/lambdas: contains the code of our lambda functions deployed on AWS
 - src/bedrock: contains instructions for Bedrock and Knowledge Base setup
 - src/dynamoDB: contains instructions for DynamoDB setup to save subscribers to the bot
+
+## Architecture Diagram
+![got_interface2](imgs/final_archi.png)
 
 ## Instructions to set up
 
