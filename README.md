@@ -1,8 +1,9 @@
-<img src="imgs/lifewatchlogo.jpg" alt="lifewatch_logo" width="200"># AI Agent Global Hackathon - Team LifeWatch
+<img src="imgs/lifewatchlogo.jpg" alt="lifewatch_logo" width="200">
+# AI Agent Global Hackathon - Team LifeWatch
 
-<div style="display: flex; gap: 10px; align-items: center;">
-    <img src="imgs/alert.png" alt="bot_interface1" width="200">
-    <img src="imgs/lifewatch_subscribe.png" alt="got_interface2" width="200">
+<div style="display: flex; gap: 20px;">
+    <img src="imgs/alert.png" alt="bot_interface1" width="300">
+    <img src="imgs/lifewatch_subscribe.png" alt="got_interface2" width="300">
 </div>
 
 ## Directory structure
