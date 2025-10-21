@@ -12,13 +12,11 @@ BUCKET = "elderly-home-monitoring-images"
 EVENTS_BUCKET = os.environ['EVENTS_BUCKET']
 PREFIX = f"detected-images/datestr={date.today().strftime('%Y%m%d')}/"
 KNOWLEDGE_BASE_PREFIX = "knowledge-base/"
-SNS_TOPIC_ARN = "arn:aws:sns:ap-southeast-1:730335529101:alerts"
-TELEGRAM_BOT_TOKEN = '8422366020:AAHX5oRIsEnp_7RcajdruGKIe6ggFmfvHa8'
+TELEGRAM_BOT_TOKEN = os.environ['TELEGRAM_BOT_TOKEN']
 
 # ====== Initialize clients ======
 bedrock_runtime = boto3.client("bedrock-runtime", region_name="ap-southeast-1")
 s3 = boto3.client("s3")
-sns = boto3.client("sns")
 dynamodb = boto3.resource("dynamodb")
 
 # ====== Bedrock model ID ======
@@ -84,6 +82,22 @@ def broadcast_telegram_message(text: str):
         except Exception as e:
             print(f"Failed to send to {chat_id}: {e}")
 
+def trigger_kb_sync():
+    try:
+        kb_id = os.environ.get("KNOWLEDGE_BASE_ID")
+        ds_id = os.environ.get("DATA_SOURCE_ID")
+        if not kb_id or not ds_id:
+            print("Knowledge Base or Data Source ID not set; skipping sync.")
+            return
+        response = bedrock_agent.start_ingestion_job(
+            knowledgeBaseId=kb_id,
+            dataSourceId=ds_id
+        )
+        print(f"Triggered Bedrock knowledge base sync: {response['ingestionJob']['ingestionJobId']}")
+    except Exception as e:
+        print(f"Failed to trigger knowledge base sync: {e}")
+
+
 # ====== Bedrock helpers ======
 def create_multimodal_prompt(image_data: bytes, text: str, content_type: str, system_prompt: str = None, max_tokens: int = 1000, temperature: float = 0.5, model_id: str = MODEL_ID):
     prompt = {
@@ -132,7 +146,7 @@ def get_historical_events(hours_back: int = 24) -> List[Dict[str, Any]]:
         for obj in response["Contents"]:
             if obj["Key"].endswith("_analysis.json"):
                 try:
-                    file_response = s3.get_object(Bucket=BUCKET, Key=obj["Key"])
+                    file_response = s3.get_object(Bucket=EVENTS_BUCKET, Key=obj["Key"])
                     event_data = json.loads(file_response["Body"].read())
                     if "timestamp" in event_data:
                         event_time = datetime.strptime(event_data["timestamp"], "%Y%m%d-%H%M%S")
@@ -298,5 +312,7 @@ def lambda_handler(event, context):
     # 8️⃣ Save to knowledge base
     save_to_knowledge_base(report, key)
 
+    # 9️⃣ Trigger Bedrock knowledge base sync
+    trigger_kb_sync()
     print("Final Analysis Report:", json.dumps(report, indent=2))
     return {"statusCode": 200, "body": json.dumps(report)}
